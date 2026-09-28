@@ -27,6 +27,7 @@ export interface SuccessfulDiagramState {
   diagram: string;
 }
 
+/** Save a terminal diagram result. @see docs/flows/artifact-storage.md */
 export async function persistGenerationResult(params: {
   username: string;
   repo: string;

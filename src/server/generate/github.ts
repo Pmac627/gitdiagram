@@ -580,6 +580,7 @@ async function fetchGithubData(
   };
 }
 
+/** Read repository data from GitHub. @see docs/flows/diagram-generation.md */
 export async function getGithubData(
   username: string,
   repo: string,

@@ -1,4 +1,37 @@
-# Affordable generation benchmark — September 18, 2026
+---
+type: Runbook
+title: Affordable generation benchmark, September 18, 2026
+description: Dated benchmark results for the managed GPT-5.6 Luna generation path.
+diataxis: explanation
+date: 2026-09-18
+status: draft
+sources:
+  - id: generation-model
+    resource: src/server/generate/model-config.ts
+  - id: generation-policy
+    resource: src/server/generate/generation-policy.ts
+  - id: generation-cost
+    resource: src/server/generate/pricing.ts
+  - id: repository-input
+    resource: src/server/generate/repository-context.ts
+  - id: source-input
+    resource: src/server/generate/source-context.ts
+  - id: generation-stream
+    resource: src/app/api/generate/stream/route.ts
+generated: { by: codex/gpt-6-astra, at: 2026-09-28T19:22:09Z }
+verified:
+  - { by: codex/gpt-6-astra, at: 2026-09-28T19:22:09Z }
+---
+
+# Affordable generation benchmark, September 18, 2026
+
+The record date is September 18, 2026.
+
+The report shows values and notes below.
+
+The OpenAI model is `DEFAULT_OPENAI_MODEL` in `src/server/generate/model-config.ts`. `getArchitectureReasoningEffort` sets `low` for `gpt-6-luna` in `src/server/generate/generation-policy.ts`.
+
+```markdown
 
 The managed generation path uses GPT-5.6 Luna, medium reasoning, Fast service tier, one streamed structured response, and the existing deterministic colored Mermaid compiler. Explicit model and user-key choices remain respected. Provider requests have no output-token caps.
 
@@ -81,3 +114,4 @@ The 160 completed benchmark artifacts recorded $1.2543 in API usage-derived cost
 ## Reading-size correction
 
 The final visual pass found that normal reading mode fitted both SVG dimensions to the viewport, making a detailed Caddy graph only 474 pixels wide on a laptop. Reading mode now fits the available **width**, permits ordinary vertical page scrolling, and caps small-diagram enlargement at 1.25×. The same saved graph rendered at 1,152 pixels wide locally, making its labels more than twice as large. Interactive zoom and browse-preview fitting retain their own behavior. Desktop and 390-pixel mobile checks had no horizontal page overflow. The homepage and approved toolbar/theme were unchanged. The full suite passed 551 tests; React Doctor scored this rendering change 100/100.
+```

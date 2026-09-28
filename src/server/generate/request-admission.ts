@@ -62,6 +62,7 @@ function jsonError(
   );
 }
 
+/** Check a diagram request before model work. @see docs/flows/diagram-generation.md */
 export async function admitGenerationRequest(
   request: Request,
 ): Promise<GenerationRequestAdmission> {
