@@ -61,6 +61,7 @@ next-env.d.ts
 /example-generation-previews/
 /migration-backups/
 /scripts/local/
+/docs/tickets/
 
 __pycache__/
 venv

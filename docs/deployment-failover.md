@@ -1,69 +1,89 @@
+---
+type: Runbook
+title: Offline Railway recovery
+description: How to restore GitDiagram on Railway if Vercel cannot serve the site.
+diataxis: how-to
+status: draft
+sources:
+  - id: railway-docker
+    resource: Dockerfile
+  - id: railway-config
+    resource: railway.json
+  - id: vercel-config
+    resource: vercel.json
+  - id: next-config
+    resource: next.config.js
+  - id: readiness
+    resource: src/server/readiness.ts
+  - id: video-origin
+    resource: src/server/explainer/render-origin.ts
+  - id: video-audience
+    resource: src/server/explainer/audience.ts
+  - id: video-limits
+    resource: src/server/explainer/limits.ts
+  - id: generation-limit
+    resource: src/server/generate/rate-limit.ts
+  - id: network
+    resource: src/lib/network.ts
+  - id: env-template
+    resource: .env.example
+generated: { by: codex/gpt-6-astra, at: 2026-09-28T19:16:06Z }
+verified:
+  - { by: codex/gpt-6-astra, at: 2026-09-28T19:16:06Z }
+---
+
 # Offline Railway recovery
 
-GitDiagram has one application implementation and one live deployment target:
+GitDiagram uses `Vercel` for live traffic. The repo has a recovery path for `Railway` and `Docker`.
 
-- **Live production:** Vercel serves the frontend and every backend Route Handler at `gitdiagram.com`.
-- **Offline recovery option:** `Dockerfile` and `railway.json` can package the same application for Railway if Vercel must be replaced later.
+No Railway service or domain is active for live use. The recovery path does not operate as a standby service.
 
-There is no deployed Railway service, connected Railway source, Railway domain, or Railway DNS record. Railway is not receiving traffic and is not part of the normal request path.
+## Recovery files
 
-## What is retained
+The `Dockerfile` sets Next.js output to `standalone` through `RAILWAY_DOCKER_BUILD`. It starts the app with a non-root user.
 
-The repository keeps a production-only Docker path that:
+The image listens on `PORT`, which defaults to `3000`. It installs Debian Chromium for video renders on Railway.
 
-- builds the existing Next.js application with `output: "standalone"`;
-- runs the generated server as a non-root user;
-- respects the platform-provided `PORT`;
-- exposes the same UI, Route Handlers, graph compiler, quota logic, cancellation protocol, and persistence code as Vercel;
-- uses `/api/healthz` as its deployment health check.
+The `railway.json` file sets `/api/healthz` as the health path. `checkReadiness` in `src/server/readiness.ts` checks provider and storage values, each R2 bucket, and Redis.
 
-This is not the old Python/FastAPI backend. No Python service or second API implementation is required.
+The recovery service uses the same code and data stores. R2 stores diagram and video files. Upstash Redis stores quotas and locks.
 
-## Recreate Railway only when needed
+## Restore service
 
-Do not run these commands during normal operation. In a real recovery:
+Use these steps during a recovery:
 
-1. Check out the exact production commit and pass the local quality gate.
-2. Link this directory to an empty Railway project with `railway link`, or create a new one with `railway init --name gitdiagram`.
-3. Create an unconnected service:
+1. Select the production commit. Use the local checks in [Local development setup](dev-setup.md).
+2. Select an empty Railway project.
+   - For an empty project, use `railway link`.
+   - For a new project, use `railway init --name gitdiagram`.
+3. Add a service with `railway add --service gitdiagram-api`.
+4. Set the service values from `.env.example`.
+5. Send each secret through stdin with `railway variable set VARIABLE_NAME --stdin --service gitdiagram-api`.
+6. Upload and deploy the checkout with `railway up --service gitdiagram-api`.
+7. Add a temporary Railway domain.
+8. Check `/api/healthz`, cost estimates, one small generation, cancellation, and saved diagram data.
+9. Keep Vercel available during recovery.
+10. Move live traffic to Railway after all checks.
 
-   ```bash
-   railway add --service gitdiagram-api
-   ```
+`railway up` does not connect the service to GitHub or make a public domain.
 
-4. Add the required variables from `.env.example`. Supply secret values through stdin so they do not enter shell history:
+Set `NEXT_PUBLIC_POSTHOG_KEY`, `NEXT_PUBLIC_PRESENCE_URL`, and `NEXT_PUBLIC_VIDEO_EXPLAINER` as Docker `build` arguments. The Dockerfile adds these values to client code.
 
-   ```bash
-   railway variable set VARIABLE_NAME --stdin --service gitdiagram-api
-   ```
+## Trust limits outside Vercel
 
-5. Upload and deploy the current checkout:
+The video audience rule reads location headers through `requestGeo` in `src/server/http/vercel-geo.ts`. A client can change these headers on Railway.
 
-   ```bash
-   railway up --service gitdiagram-api
-   ```
+The generation and video limits use the client network address. The app reads proxy headers for this address. A client can change these headers behind a proxy that does not replace them.
 
-   `railway up` does not connect the service to GitHub and does not create a public domain by itself.
+These controls do not give the same protection on Railway. The daily video limits and complimentary token quota use Upstash.
 
-6. Add a temporary Railway domain, then verify health, cost estimation, a small streamed generation, cancellation, and persisted diagram state.
-7. Only after those checks pass, make an explicit routing decision. Keep Vercel intact until the incident is resolved.
-
-### Trust boundaries outside Vercel
-
-Several controls read request headers that Vercel's edge sets on every request: `x-vercel-ip-*` (country, region, city, latitude and longitude) and `x-forwarded-for` / `x-real-ip`. Behind Railway's proxy, or any other host, a client can set or prefix them. On such a host:
-
-- the video early-access gate (`audience.ts`) can be passed by sending a matching `x-vercel-ip-*` location;
-- per-network (per-IP) video and MP4 limits and the diagram generation rate limit can be dodged by changing `x-forwarded-for` on each request.
-
-The overall daily caps, the per-browser limits and the complimentary token quota still bound total spend. Before sending real traffic to a non-Vercel host, pause new videos or open the gate to everyone from `/admin` so the location rule is not relied on, and consider lowering the overall daily limits.
-
-Because the whole Next.js application moves together, recovery does not need a browser CORS toggle, a public backend selector, or a data migration. R2 owns diagram artifacts and Upstash owns shared quota, cancellation, lock, and failure state.
+Before live traffic goes to Railway, change the video audience rule in `/admin`. Set it to `everyone` or pause new video generation. Lower daily limits to decrease spend.
 
 ## Return to Vercel
 
-1. Verify `https://gitdiagram.com/api/healthz` and a small production generation.
-2. Restore `gitdiagram.com` to the intended Vercel deployment if routing changed.
-3. Remove the temporary Railway domains and delete the Railway service.
-4. Confirm the Railway project has no services and the DNS zone has no Railway records.
+1. Check `https://gitdiagram.com/api/healthz` and one small production generation.
+2. Set `gitdiagram.com` to the intended Vercel deployment.
+3. Delete temporary Railway domains and the Railway service.
+4. Check that Railway has no service and DNS has no Railway record.
 
-The checked-in recovery files remain available for the next incident without keeping Railway compute, deployments, or public endpoints alive.
+The recovery files stay in the repo. They do not start a Railway service or make a public endpoint.

@@ -1,53 +1,76 @@
-# Architecture
+---
+type: Architecture
+title: Application architecture
+description: Runtime parts, data stores, and the main service boundaries.
+diataxis: explanation
+status: draft
+sources:
+  - id: routes
+    resource: src/app/**
+  - id: generation
+    resource: src/server/generate/**
+  - id: storage
+    resource: src/server/storage/**
+  - id: explainer
+    resource: src/server/explainer/**
+  - id: worker
+    resource: workers/presence/src/**
+  - id: deployment
+    resource: Dockerfile
+generated: { by: codex/gpt-6, at: 2026-09-28T19:17:00Z }
+verified:
+  - { by: codex/gpt-6, at: 2026-09-28T19:17:00Z }
+tags: [architecture, runtime]
+---
 
-[← README](../README.md)
+# Application architecture
 
-## Stack
+The Next.js app contains the browser UI and the server routes.
+The server reads GitHub, sends bounded repository context to a model, and saves results.
+The optional Cloudflare Worker holds live browser connections for the operator dashboard.
 
-- **Application:** Next.js 16 App Router, React 19, TypeScript, Tailwind CSS, and Radix UI
-- **Generation API:** same-origin Next.js Route Handlers running on Vercel's Bun runtime
-- **Storage:** Cloudflare R2 for diagram artifacts
-- **Coordination:** Upstash Redis for quota accounting, cancellation, locks, and short-lived failure state
-- **AI:** OpenAI or OpenRouter through `AI_PROVIDER`
-- **Analytics:** PostHog
-- **Deployment:** Vercel is the only live runtime; an offline Railway/Docker recipe is retained for disaster recovery
+```mermaid
+flowchart LR
+    Browser[Browser UI] --> Routes[Next.js routes]
+    Routes --> Generation[Diagram generation]
+    Routes --> Video[Video generation and render]
+    Routes --> Admin[Operator controls]
+    Generation --> GitHub[GitHub]
+    Generation --> Model[OpenAI or OpenRouter]
+    Generation --> Storage[Storage layer]
+    Video --> GitHub
+    Video --> Model
+    Video --> Storage
+    Admin --> Storage
+    Browser -. Optional .-> Presence[Cloudflare presence worker]
+    Browser -. Optional .-> Analytics[PostHog]
+    Storage --> R2[Cloudflare R2]
+    Storage --> Redis[Upstash REST]
+```
 
-There is no separate FastAPI implementation, Postgres database, or Neon runtime.
+## Runtime parts
 
-The same application also serves feature-flagged explainer videos (`/api/video/*`, the `/[username]/[repo]/video` watch page and the `/videos` gallery; Claude/GPT scripts and scenes, OpenRouter narration, MP4s rendered with headless Chromium and ffmpeg) and the operator dashboard at `/admin`, fed by a separate Cloudflare Worker for live presence (`workers/presence`). See the "Explainer videos" and "Operator dashboard" sections of [CLAUDE.md](../CLAUDE.md) for how they work.
+`POST` in `src/app/api/generate/stream/route.ts:126` coordinates diagram work and sends server-sent events.
+`getGithubData` in `src/server/generate/github.ts:583` reads repository metadata, tree, and README.
+`createClient` in `src/server/generate/openai.ts:48` selects OpenAI or OpenRouter.
+`persistGenerationResult` in `src/server/storage/generation-persistence.ts:30` saves the terminal result.
 
-## Production architecture
+`generateExplainerVideo` in `src/server/explainer/generate.ts:25` makes a video plan, narration, and stored artifact.
+`renderMp4InSegments` in `src/server/explainer/segments.ts:332` coordinates MP4 rendering.
+The render worker uses Chromium and ffmpeg through `renderVideoSegment` in `src/server/explainer/render.ts`.
 
-Vercel serves both the UI and the generation endpoints:
+`POST` in `src/app/api/admin/controls/route.ts:37` writes operator controls.
+The presence Worker uses the `Presence` object in `workers/presence/src/index.ts` for live connections and events.
+`captureAnalyticsEvent` in `src/lib/analytics-client.ts:112` sends optional browser events to PostHog.
 
-- `/api/generate/cost` estimates a run after bounded GitHub ingestion, same-origin and rate limited.
-- `/api/generate/stream` streams Server-Sent Events for explanation and graph progress.
-- `/api/generate/cancel` records authenticated, same-origin cancellation signals.
-- `/api/diagram-state` reads and writes the persisted result contract.
-- `/api/healthz` provides a lightweight deployment health check.
+## State and deployment
 
-Long-running generation uses a 300-second Vercel function budget with a shorter application deadline so quota reconciliation and persistence still have time to finish. Requests use explicit upstream deadlines, retries, structured logs, heartbeats, and distributed cancellation rather than process-local state.
+`getPublicLocation` and `getPrivateLocation` in `src/server/storage/cache-key.ts` select different R2 buckets.
+The private location also uses a namespace from the caller's GitHub token.
+`upstashCommand` in `src/server/storage/upstash.ts:52` sends Redis commands for quota and coordination state.
+`videoStoreBackend` in `src/server/explainer/store.ts:77` selects local storage when production is off and R2 in production.
 
-The default managed OpenAI pipeline uses one GPT-6 Luna request at low reasoning to produce a source-grounded graph and short streamed overview. The model returns a compact graph without redundant descriptions or type captions. Graphs are validated and compiled deterministically; additional Luna calls are reserved for structural repairs at medium reasoning or one recovery after an 18-second slow request. The slow connection is cancelled before its replacement starts; its unavailable partial usage is included as an estimated cost. Managed GPT-6 Luna and GPT-5.6 requests explicitly use Fast mode (`service_tier: "priority"`); estimates include its premium, and final costs use the model and tier actually served. User-supplied keys retain standard service and their configured model. Explicit model overrides and OpenRouter retain the two-stage pipeline. Output token estimates reserve quota but do not cap provider output.
-
-The same Next.js application can also build into a minimal, non-root standalone Docker image for Railway. No Railway service, source connection, or Railway domain is kept live. The checked-in `Dockerfile` and `railway.json` are a cold recovery recipe that can recreate the full application later without reviving a second backend implementation. See [deployment-failover.md](deployment-failover.md).
-
-## How generation works
-
-1. GitDiagram fetches the repository's default branch, recursive tree, and README through the GitHub API. When GitHub returns a partial (truncated) tree for a very large repository, the listing is kept and top-level folders it left out are read one level deep, so big repositories still get a diagram; the model only sees a bounded excerpt of the tree either way. An oversized README is rejected before model work begins.
-2. GitDiagram fetches bounded, integrity-checked source excerpts. Selection favors substantive runtime modules, distributes excerpts across long files, and preserves import bindings for sampled calls.
-3. One managed Luna request streams a short architecture overview followed by a strict graph: groups, nodes, edges, shapes, labels, and repository paths. Explicit model overrides and user-supplied keys retain the separate explanation/graph flow.
-4. The server validates identifiers, graph connectivity, limits, and every linked path against the actual repository. Invalid output is retried with focused feedback.
-5. A deterministic compiler converts the validated AST to Mermaid with total text escaping and GitHub-only links.
-6. The browser sanitizes the source, renders Mermaid with `securityLevel: "antiscript"` and `htmlLabels: false`, sanitizes the resulting SVG with DOMPurify, and enforces the GitHub-only link allowlist again. Mermaid's `strict` mode is not usable because it disables the `click` directives that make nodes link to GitHub, so the allowlist enforcement carries that weight.
-7. Successful artifacts and terminal audit state are persisted so later visits can reopen the diagram without another model call.
-
-The full Mermaid parser remains in the test suite as a compiler contract test. It is deliberately not loaded into the production generation function, keeping the server bundle small without weakening diagram validation or browser safety.
-
-## State
-
-- **Successful public generations:** R2 object keyed by repository
-- **Successful private generations:** separate R2 namespace derived with a server-side secret
-- **Complimentary quota and active cancellation tokens:** Upstash Redis
-- **Terminal failures without a saved artifact:** short-lived Upstash state
-- **Concurrent writes:** distributed lock plus newest-session-wins persistence
+`package.json` gives Bun development and build commands.
+`Dockerfile` assembles a standalone Next.js image with Chromium for local container deployment.
+`next.config.js` sets the browser CSP and the presence connection origin.
+The [deployment recovery page](deployment-failover.md) gives the Railway recovery path kept in this repository.

@@ -85,6 +85,7 @@ function sign(token: string, payload: string): string {
   return createHmac("sha256", token).update(payload).digest("base64url");
 }
 
+/** Sign an operator browser session. @see docs/flows/operator-live-ops.md */
 export async function createAdminSession(now = Date.now()): Promise<{
   value: string;
   maxAgeSeconds: number;

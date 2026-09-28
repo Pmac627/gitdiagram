@@ -224,6 +224,7 @@ export async function claimSponsorEvent(
   return claimed === 1;
 }
 
+/** Send an eligible sponsor event. @see docs/flows/sponsor-measurement.md */
 export async function recordSponsorEvent({
   event,
   campaign,

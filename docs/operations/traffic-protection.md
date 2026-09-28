@@ -1,54 +1,39 @@
+---
+type: Runbook
+title: Traffic protection
+description: How repository pages and social images use caches, and where operators inspect firewall rules.
+diataxis: explanation
+status: draft
+sources:
+  - id: repository-page
+    resource: src/app/*/*/page.tsx
+  - id: repository-image
+    resource: src/app/*/*/opengraph-image/route.ts
+  - id: repository-image-render
+    resource: src/server/og/cards.tsx
+  - id: repository-cache-paths
+    resource: src/server/storage/repo-page-cache.ts
+  - id: generation-invalidation
+    resource: src/server/storage/generation-persistence.ts
+  - id: route-normalization
+    resource: src/proxy.ts
+  - id: next-routes
+    resource: next.config.js
+  - id: deployment-config
+    resource: vercel.json
+generated: { by: openai/gpt-6, at: 2026-09-28T19:30:26Z }
+verified:
+  - { by: openai/gpt-6, at: 2026-09-28T19:30:26Z }
+---
+
 # Traffic protection
 
-Repository browsing must not regenerate unchanged pages and social images for
-every crawler visit. Repository pages use a six-hour ISR interval, while social
-images use one day. Successful public generations immediately invalidate the page,
-data tag, and image route for normalized and requested URL casing. Both social
-metadata fields use the same Open Graph image; old Twitter image URLs redirect
-at the CDN without rendering a second image. Mixed-case repository and image
-URLs redirect to lowercase cache entries. Browse links only
-load a repository page when opened; they do not prefetch every visible result.
+`Repo` in `src/app/[username]/[repo]/page.tsx` sets a six-hour cache time for the page and its stored diagram data. If a storage read has an error, the page cache time is one minute. `persistGenerationResult` in `src/server/storage/generation-persistence.ts` clears the normalized and input page paths, their image paths, and the data tag after generation ends without error.
 
-The Vercel firewall also has these project-level rules, managed separately from
-deployments:
+`GET` in `src/app/[username]/[repo]/opengraph-image/route.ts` sets a one-day image refresh time. `createRepoSocialImage` in `src/server/og/cards.tsx` sets a five-minute browser cache and a one-day CDN cache. The metadata fields use the Open Graph image. `redirects` in `next.config.js` sends the Twitter image path to `route.ts`.
 
-| Rule | Conditions (all must match) | Action |
-| --- | --- | --- |
-| Amazonbot repository crawl | User agent contains `Amazonbot`; route is `/[username]/[repo]`, `/[username]/[repo]/opengraph-image`, or `/[username]/[repo]/twitter-image` | Deny |
-| Block Brightbot repository crawl | User agent equals `Brightbot 1.0`; route is `/[username]/[repo]`, `/[username]/[repo]/opengraph-image`, or `/[username]/[repo]/twitter-image` | Deny |
-| Repository scraper verification | Route is `/[username]/[repo]`; either ASN is `212317` or `213230`, or user agent exactly matches one of the signatures below | Challenge |
+`proxy` in `src/proxy.ts` sends repository page and image paths that have capital letters to `lowercase`. `getRepoPagePath` in `src/server/storage/repo-page-cache.ts` makes the `lowercase` path and cache tags.
 
-These conditions were selected after observing repeated bulk repository crawls.
-The crawler rotated Safari and Chrome signatures, then switched to other hosting
-networks. The challenge therefore matches either the original source networks or
-these exact user agents, always restricted to repository pages:
+The repository does not set Vercel firewall rules. `vercel.json` sets a browse index drain schedule and memory for video segment data. Check the Vercel project before you use a firewall rule name, condition, or step.
 
-```text
-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0.1 Safari/605.1.15
-Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36
-```
-
-Real browsers matching those conditions must complete verification. Other
-ordinary traffic, Googlebot, Bingbot, and social link preview clients do not match
-these signatures. The Amazonbot robots policy also discourages future repository
-crawls. Existing API rate limits remain enabled. Paid Observability Plus is
-disabled to avoid event charges; PostHog remains the product analytics system.
-
-Inspect current rules with `vercel firewall rules list --expand`. Before changing
-them, inspect available firewall traffic and runtime logs, and use PostHog for
-browser behavior. Detailed historical Vercel queries require Observability Plus.
-Verify both matching
-traffic and ordinary requests after publishing. Alert counts are request volume,
-not unique visitors; check product analytics and billing independently.
-
-If a rule starts matching legitimate traffic, change only that rule to logging:
-
-```sh
-vercel firewall rules edit 'Amazonbot repository crawl' --action log --yes
-vercel firewall diff
-vercel firewall publish --yes
-```
-
-Use the relevant rule name for the scraper challenge. Check for unrelated
-draft changes before publishing. Billing and platform security notifications are
-separate from Observability Plus anomaly alerts; leave those notifications on.
+The prior firewall record names `Amazonbot`, `Brightbot`, and repository traffic rules. The code does not include these rules. Read the live Vercel project before you change a rule.

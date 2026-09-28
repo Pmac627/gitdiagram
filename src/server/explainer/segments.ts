@@ -328,6 +328,7 @@ export type RenderProgress = {
  * before it and joining after. The first segment to fail for good stops all
  * the others, and aborting `signal` (the render's deadline) stops every step:
  * segment requests, the soundtrack's fetches and ffmpeg, and the join.
+ * @see docs/flows/explainer-video.md
  */
 export async function renderMp4InSegments(params: {
   artifact: VideoArtifact;

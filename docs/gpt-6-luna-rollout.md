@@ -1,4 +1,37 @@
-# GPT-6 Luna migration — September 22, 2026
+---
+type: Runbook
+title: GPT-6 Luna migration, September 22, 2026
+description: Dated rollout report for the managed GPT-6 Luna generation configuration.
+diataxis: explanation
+date: 2026-09-22
+status: draft
+sources:
+  - id: model-config
+    resource: src/server/generate/model-config.ts
+  - id: generation-policy
+    resource: src/server/generate/generation-policy.ts
+  - id: pricing
+    resource: src/server/generate/pricing.ts
+  - id: source-selection
+    resource: src/server/generate/repository-context.ts
+  - id: source-read
+    resource: src/server/generate/source-context.ts
+  - id: generation-stream
+    resource: src/app/api/generate/stream/route.ts
+generated: { by: codex/gpt-6-astra, at: 2026-09-28T19:22:09Z }
+verified:
+  - { by: codex/gpt-6-astra, at: 2026-09-28T19:22:09Z }
+---
+
+# GPT-6 Luna migration, September 22, 2026
+
+The record date is September 22, 2026.
+
+The report shows values and notes below.
+
+The OpenAI model is `DEFAULT_OPENAI_MODEL` in `src/server/generate/model-config.ts`. `getArchitectureReasoningEffort` sets `low` for `gpt-6-luna` in `src/server/generate/generation-policy.ts`. Graph repair uses `GRAPH_REASONING_EFFORT` in `src/server/generate/generation-policy.ts`.
+
+```markdown
 
 GitDiagram's managed default moves from `gpt-5.6-luna` to `gpt-6-luna`. The migration retains structured streaming, deterministic Mermaid compilation, graph validation and repairs, bounded source sampling, uncapped model output, and the single slow-request recovery. User-owned keys keep Standard service, and explicit model/provider overrides remain respected.
 
@@ -65,3 +98,4 @@ Manual review confirmed GitDiagram's compilation node links to `src/server/gener
 652 tests across 86 files passed, along with lint, TypeScript, formatting, Knip, dependency audit, production build, and performance budgets. Tests cover the new default and optional quota family, single-pass eligibility, user-key Standard billing, snapshot identifiers, reasoning selection, Fast service requests, returned-tier accounting, cache reads/writes, and estimates.
 
 The existing production graph-repair function also corrected the rejected medium-effort graph in one additional request (18.93 seconds; $0.004744 measured cost), confirming the new model supports the repair contract.
+```

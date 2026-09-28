@@ -1,0 +1,66 @@
+technical_nouns:
+  - term: GitDiagram
+    meaning: the web app that makes repository architecture diagrams and videos
+  - term: repository
+    meaning: a GitHub repository selected by a visitor
+  - term: diagram
+    meaning: a Mermaid architecture graph for a repository
+  - term: source excerpt
+    meaning: a bounded part of a repository source file sent to a model
+  - term: artifact
+    meaning: a saved diagram or video result
+  - term: browse index
+    meaning: the list of public diagram artifacts for browsing
+  - term: session audit
+    meaning: the saved summary of one diagram generation attempt
+  - term: explainer video
+    meaning: a generated film about a repository
+  - term: sponsor campaign
+    meaning: an ad placement with a destination and countable events
+  - term: operator dashboard
+    meaning: the admin page for controls and live activity
+  - term: presence worker
+    meaning: the Cloudflare Worker that relays live visitor activity
+  - term: visitor ID
+    meaning: a browser identifier used for video admission
+  - term: route
+    meaning: a Next.js HTTP Route Handler
+  - term: request
+    meaning: an HTTP request accepted by a route
+  - term: origin
+    meaning: the scheme and host of an HTTP or WebSocket URL
+  - term: caller
+    meaning: a browser or service that sends a request
+  - term: state
+    meaning: the saved diagram, control, or session data used by a route
+  - term: event
+    meaning: a typed message sent through a stream or analytics path
+  - term: feed
+    meaning: the sequence of live admin events
+  - term: build
+    meaning: the compiled Next.js app
+  - term: binding
+    meaning: a Cloudflare Worker value or service supplied at deployment
+  - term: port
+    meaning: the TCP port of the app server
+  - term: effort
+    meaning: the reasoning effort selected for a model request
+  - term: activity
+    meaning: visitor or server actions shown in the operator dashboard
+  - term: progress
+    meaning: generation or render status sent to the browser
+  - term: film
+    meaning: the explainer video plan and its media
+  - term: Mermaid
+  - term: GitHub
+  - term: OpenRouter
+  - term: PostHog
+  - term: R2
+  - term: Upstash
+technical_verbs:
+  - term: generate
+    meaning: create a diagram or video from repository data
+  - term: render
+    meaning: make a video file or a browser diagram from a plan
+  - term: coordinate
+    meaning: orchestrate concurrent generation or render work

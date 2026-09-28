@@ -21,6 +21,7 @@ import { writeVideo } from "./store";
  * the model once the repository's star count is known (the premium model by
  * default). When this rejects, nothing it started is still running, so the
  * caller may release its lock.
+ * @see docs/flows/explainer-video.md
  */
 export async function generateExplainerVideo({
   username,
