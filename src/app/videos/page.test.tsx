@@ -51,7 +51,7 @@ describe("/videos", () => {
   it("has its own link preview instead of the homepage's", () => {
     expect(metadata.openGraph).toMatchObject({
       title: metadata.title,
-      url: "https://gitdiagram.com/videos",
+      url: "https://gitdiagram.tuple.pro/videos",
       images: [expect.objectContaining({ url: "/opengraph-image.png" })],
     });
     expect(metadata.twitter).toMatchObject({

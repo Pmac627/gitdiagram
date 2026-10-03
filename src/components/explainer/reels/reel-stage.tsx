@@ -11,10 +11,6 @@ import { ExplainerAudio, type SfxCue } from "~/features/explainer/audio-mixer";
 import { STAGE_PATH } from "~/features/explainer/engine";
 import { reelOutput } from "~/features/explainer/reels";
 import type { VideoArtifact } from "~/features/explainer/types";
-import {
-  captureVideoEvent,
-  WatchTracker,
-} from "~/features/explainer/watch-analytics";
 import styles from "./reels.module.css";
 
 type StageMessage =
@@ -56,9 +52,6 @@ export function ReelStage({
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const mixer = useRef<ExplainerAudio | null>(null);
-  // How much of this reel has been watched, for the same analytics as the
-  // player, marked as seen in the feed.
-  const watch = useRef<WatchTracker | null>(null);
   const [drawn, setDrawn] = useState(false);
   const [ready, setReady] = useState(false);
   const duration = video.timing.DURATION;
@@ -108,9 +101,6 @@ export function ReelStage({
       } else if (message.type === "ready") {
         show(opening);
         setDrawn(true);
-        watch.current = new WatchTracker(video.timing.DURATION, (name, extra) =>
-          captureVideoEvent(name, video, { ...extra, surface: "reels" }),
-        );
         const audio = new ExplainerAudio(video, message.sfx, 2, reelOutput());
         mixer.current = audio;
         audio
@@ -137,7 +127,6 @@ export function ReelStage({
   // reel starts over at its end.
   useEffect(() => {
     const audio = mixer.current;
-    const tracker = watch.current;
     if (!ready || !audio || !playing) return;
     let stopped = false;
     let restarting = false;
@@ -150,9 +139,6 @@ export function ReelStage({
           console.error("Reel audio could not start", error);
           return false;
         })
-        .then((started) => {
-          if (started && !stopped) tracker?.play(from);
-        })
         .finally(() => {
           restarting = false;
         });
@@ -162,14 +148,12 @@ export function ReelStage({
       if (!restarting && audio.isPlaying) {
         const time = audio.currentTime();
         if (time >= duration - 0.05) {
-          tracker?.pause();
           start(0);
           show(0);
           setProgress(0);
         } else {
           show(time);
           setProgress(time);
-          tracker?.frame(time);
         }
       }
       frameId = requestAnimationFrame(loop);
@@ -181,7 +165,6 @@ export function ReelStage({
       stopped = true;
       cancelAnimationFrame(frameId);
       audio.pause();
-      tracker?.pause();
     };
   }, [ready, playing, duration, show]);
 

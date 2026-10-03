@@ -8,10 +8,11 @@ export interface GenerationTokenUsage {
   serviceTier?: string;
 }
 
+/** Report token usage and a price when the model has a known rate. @see docs/flows/diagram-generation.md */
 export interface GenerationCostSummary {
   kind: "estimate" | "actual";
   approximate: boolean;
-  amountUsd: number;
+  amountUsd: number | null;
   display: string;
   pricingModel: string;
   usage: GenerationTokenUsage;

@@ -1,5 +1,6 @@
 import { after, type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { requireOperator } from "~/server/auth/require-operator";
 
 import {
   getPublicDiagramPreview,
@@ -10,6 +11,7 @@ import {
   githubUsernameSchema,
 } from "~/server/generate/types";
 
+import { errorText } from "~/server/log";
 // The value is only ever compared against a stored ISO timestamp, so anything
 // longer than one cannot match and has no reason to reach storage.
 const MAX_LAST_SUCCESSFUL_AT_LENGTH = 64;
@@ -25,6 +27,9 @@ const previewQuerySchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
+  const denied = await requireOperator(request);
+  if (denied) return denied;
+
   const parsed = previewQuerySchema.safeParse({
     username: request.nextUrl.searchParams.get("username") ?? undefined,
     repo: request.nextUrl.searchParams.get("repo") ?? undefined,
@@ -55,7 +60,7 @@ export async function GET(request: NextRequest) {
     console.error(
       JSON.stringify({
         event: "diagram_preview.read_failed",
-        error: error instanceof Error ? error.message : "Unknown error",
+        error: errorText(error),
       }),
     );
     return NextResponse.json(
@@ -90,7 +95,7 @@ export async function GET(request: NextRequest) {
             event: "diagram_preview.sidecar_backfill_failed",
             username,
             repo,
-            error: error instanceof Error ? error.message : "Unknown error",
+            error: errorText(error),
           }),
         );
       }
@@ -104,8 +109,7 @@ export async function GET(request: NextRequest) {
     },
     {
       headers: {
-        "Cache-Control":
-          "public, max-age=300, s-maxage=300, stale-while-revalidate=600",
+        "Cache-Control": "private, max-age=300",
       },
     },
   );

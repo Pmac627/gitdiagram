@@ -14,6 +14,9 @@ vi.mock("~/server/explainer/store", () => ({
 }));
 
 import { GET } from "./route";
+import { registerOperatorSession } from "~/server/auth/test-session";
+
+const session = registerOperatorSession();
 
 const v = "2026-09-24T08:06:45.297Z";
 const get = (query: Record<string, string> = {}) =>
@@ -26,6 +29,7 @@ const get = (query: Record<string, string> = {}) =>
         v,
         ...query,
       }).toString()}`,
+      { headers: { ...session.headers } },
     ),
   );
 
@@ -40,9 +44,13 @@ describe("GET /api/video/audio", () => {
     const response = await get();
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("audio/mpeg");
-    expect(response.headers.get("cache-control")).toBe(
-      "public, max-age=31536000, s-maxage=31536000, immutable",
-    );
+    // Gated content: never shared-cacheable, but the URL is versioned.
+    const cacheControl = response.headers.get("cache-control")!;
+    expect(cacheControl).toContain("private");
+    expect(cacheControl).toContain("max-age=31536000");
+    expect(cacheControl).toContain("immutable");
+    expect(cacheControl).not.toMatch(/\bpublic\b/);
+    expect(cacheControl).not.toContain("s-maxage");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(Buffer.from(await response.arrayBuffer()).toString()).toBe(
       "mp3 bytes",

@@ -69,7 +69,6 @@ function pageOf(all: VideoCard[], params: URLSearchParams): VideoPage {
     {
       q: params.get("q"),
       sort: params.get("sort"),
-      minStars: params.get("minStars"),
       page: params.get("page"),
     },
     VIDEO_PAGE_SIZE,
@@ -132,17 +131,18 @@ describe("VideoCatalog", () => {
     );
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/video/catalog?sort=stars_desc",
-      expect.objectContaining({ credentials: "omit" }),
+      expect.objectContaining({ credentials: "same-origin" }),
     );
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Minimum Stars" }), {
-      target: { value: "1000" },
-    });
+    expect(
+      screen.queryByRole("combobox", { name: /minimum stars/i }),
+    ).toBeNull();
+    expect(screen.queryByText(/minimum stars/i)).toBeNull();
     fireEvent.change(screen.getByRole("searchbox"), {
       target: { value: "SWR" },
     });
     await waitFor(() => expect(shownRepos()).toEqual(["/vercel/swr/video"]));
-    expect(window.location.search).toBe("?q=SWR&sort=stars_desc&minStars=1000");
+    expect(window.location.search).toBe("?q=SWR&sort=stars_desc");
 
     fireEvent.change(screen.getByRole("searchbox"), {
       target: { value: "nothing" },

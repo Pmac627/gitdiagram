@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { excerptSource } from "./source-excerpt";
+import { redactSecrets, totalFindings } from "./secret-scan";
 import { getGitHubApiHeaders } from "../github-auth";
 import type { GithubData, SourceBlob } from "./github";
 import {
@@ -13,11 +14,14 @@ interface SourceExcerpt {
   path: string;
   text: string;
   truncated: boolean;
+  redactedSecretCount: number;
 }
 export interface SourceContext {
   text: string;
   paths: string[];
   unavailableCount: number;
+  /** Secrets replaced by markers before any excerpt was cut. */
+  redactedSecretCount: number;
 }
 
 async function readBoundedBytes(
@@ -55,6 +59,19 @@ function matchesBlob(bytes: Buffer, sha: string): boolean {
       .update(bytes)
       .digest("hex") === sha
   );
+}
+
+// Scan the whole file before any excerpt window is cut, so a secret that spans
+// a window edge cannot leak. Only the redacted text is ever kept.
+function scanSource(path: string, text: string): SourceExcerpt {
+  const scan = redactSecrets(text);
+
+  return {
+    path,
+    text: scan.text,
+    truncated: false,
+    redactedSecretCount: totalFindings(scan.findings),
+  };
 }
 
 async function readBlob(params: {
@@ -95,8 +112,10 @@ async function readBlob(params: {
   if (sourceBytes.length > MAX_SOURCE_FILE_BYTES || sourceBytes.includes(0))
     return null;
   if (!matchesBlob(sourceBytes, params.blob.sha)) return null;
-  const text = new TextDecoder("utf-8", { fatal: true }).decode(sourceBytes);
-  return { path: params.path, text, truncated: false };
+  return scanSource(
+    params.path,
+    new TextDecoder("utf-8", { fatal: true }).decode(sourceBytes),
+  );
 }
 
 // Public content delivery avoids spending REST quota on each source file.
@@ -119,11 +138,10 @@ async function readPublicSource(params: {
   const bytes = await readBoundedBytes(response, MAX_SOURCE_FILE_BYTES);
   if (!bytes || bytes.includes(0)) return null;
   if (!matchesBlob(bytes, params.blob.sha)) return "changed";
-  return {
-    path: params.path,
-    text: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-    truncated: false,
-  };
+  return scanSource(
+    params.path,
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+  );
 }
 
 export async function fetchSourceContext(params: {
@@ -154,6 +172,7 @@ export async function fetchSourceContext(params: {
       text: "No source excerpts available. Use documented relationships only.",
       paths: [],
       unavailableCount: paths.length,
+      redactedSecretCount: 0,
     };
   const headers = params.githubData.isPrivate
     ? await getGitHubApiHeaders({ githubPat: params.githubPat })
@@ -252,5 +271,9 @@ export async function fetchSourceContext(params: {
       : "No source excerpts available. Use documented relationships only.",
     paths: available.map((entry) => entry.path),
     unavailableCount: paths.length - available.length,
+    redactedSecretCount: available.reduce(
+      (sum, entry) => sum + entry.redactedSecretCount,
+      0,
+    ),
   };
 }

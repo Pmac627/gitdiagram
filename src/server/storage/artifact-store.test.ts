@@ -12,7 +12,7 @@ const storageMocks = vi.hoisted(() => ({
   ),
 }));
 
-vi.mock("~/server/storage/r2", () => ({
+vi.mock("~/server/storage/object-store", () => ({
   getJsonObject: storageMocks.getJsonObject,
   putJsonObject: storageMocks.putJsonObject,
   R2_REQUEST_TIMEOUT_MS: 10_000,
@@ -96,7 +96,6 @@ async function writeArtifact(artifact: DiagramArtifact) {
 
 describe("writeDiagramArtifact", () => {
   beforeEach(() => {
-    process.env.R2_PUBLIC_BUCKET = "test-public-bucket";
     vi.clearAllMocks();
     storageMocks.withDistributedLock.mockImplementation(async ({ callback }) =>
       callback(),
@@ -163,7 +162,7 @@ describe("writeDiagramArtifact", () => {
     await expect(writeArtifact(newerArtifact)).resolves.toBe(true);
 
     expect(storageMocks.putJsonObject).toHaveBeenCalledWith(
-      "test-public-bucket",
+      "public",
       "public/v1/acme/demo.json",
       newerArtifact,
     );
@@ -193,7 +192,6 @@ describe("writeDiagramArtifact", () => {
 describe("reading older artifacts", () => {
   it("compacts duplicate audit payloads without losing the canonical diagram or modifying storage", async () => {
     vi.clearAllMocks();
-    process.env.R2_PUBLIC_BUCKET = "test-public-bucket";
     const artifact = createArtifact({
       sessionId: "legacy",
       createdAt: "2026-07-13T12:00:00Z",
@@ -225,6 +223,58 @@ describe("reading older artifacts", () => {
     expect(result?.latestSessionAudit).not.toHaveProperty("explanation");
     expect(artifact.latestSessionSummary.graph).toBe(graph);
     expect(storageMocks.putJsonObject).not.toHaveBeenCalled();
+  });
+});
+
+describe("legacy quota fields in stored audits", () => {
+  const legacy = {
+    quotaStatus: "finalized",
+    quotaBucket: "daily",
+    quotaDateUtc: "2026-07-13",
+    actualCommittedTokens: 2_920,
+    quotaResetAt: "2026-07-14T00:00:00.000Z",
+  };
+
+  it("are never written into a stored summary", () => {
+    const audit = {
+      ...createAudit({
+        sessionId: "quota",
+        createdAt: "2026-07-13T12:00:00Z",
+        updatedAt: "2026-07-13T12:01:00Z",
+      }),
+      ...legacy,
+    } as GenerationSessionAudit;
+    const summary = toStoredSessionSummary(audit);
+
+    for (const field of Object.keys(legacy)) {
+      expect(summary, field).not.toHaveProperty(field);
+      expect(JSON.stringify(summary)).not.toContain(field);
+    }
+  });
+
+  it("still parse from an old stored artifact, without the fields", async () => {
+    vi.clearAllMocks();
+    const artifact = createArtifact({
+      sessionId: "old",
+      createdAt: "2026-07-13T12:00:00Z",
+      updatedAt: "2026-07-13T12:01:00Z",
+      diagram: "flowchart TD; A-->B",
+    });
+    Object.assign(artifact.latestSessionSummary, legacy);
+    storageMocks.getJsonObject.mockResolvedValue(artifact);
+
+    const result = await getStoredDiagramState({
+      username: "acme",
+      repo: "demo",
+    });
+
+    expect(result).toMatchObject({
+      diagram: artifact.diagram,
+      latestSessionAudit: { sessionId: "old" },
+    });
+    for (const field of Object.keys(legacy)) {
+      expect(result?.latestSessionAudit, field).not.toHaveProperty(field);
+    }
   });
 });
 
@@ -341,7 +391,6 @@ describe("toStoredSessionSummary", () => {
 
 describe("public diagram previews", () => {
   beforeEach(() => {
-    process.env.R2_PUBLIC_BUCKET = "test-public-bucket";
     vi.clearAllMocks();
     storageMocks.withDistributedLock.mockImplementation(async ({ callback }) =>
       callback(),
@@ -370,7 +419,7 @@ describe("public diagram previews", () => {
     });
     expect(storageMocks.getJsonObject).toHaveBeenCalledOnce();
     expect(storageMocks.getJsonObject).toHaveBeenCalledWith(
-      "test-public-bucket",
+      "public",
       "public-preview/v1/acme/demo.json",
     );
   });
@@ -423,7 +472,7 @@ describe("public diagram previews", () => {
       }),
     ).resolves.toBe(true);
     expect(storageMocks.putJsonObject).toHaveBeenCalledWith(
-      "test-public-bucket",
+      "public",
       "public-preview/v1/acme/demo.json",
       {
         version: 1,
@@ -433,5 +482,18 @@ describe("public diagram previews", () => {
         lastSuccessfulAt: artifact.lastSuccessfulAt,
       },
     );
+  });
+});
+
+describe("toStoredSessionSummary redaction count", () => {
+  it("keeps the number of redacted secrets so the operator can see it after reload", () => {
+    const audit = createAudit({
+      sessionId: "redacted",
+      createdAt: "2026-09-17T12:00:00Z",
+      updatedAt: "2026-09-17T12:01:00Z",
+    });
+    audit.redactedSecretCount = 2;
+
+    expect(toStoredSessionSummary(audit).redactedSecretCount).toBe(2);
   });
 });

@@ -15,14 +15,32 @@ technical_nouns:
     meaning: the saved summary of one diagram generation attempt
   - term: explainer video
     meaning: a generated film about a repository
-  - term: sponsor campaign
-    meaning: an ad placement with a destination and countable events
   - term: operator dashboard
-    meaning: the admin page for controls and live activity
-  - term: presence worker
-    meaning: the Cloudflare Worker that relays live visitor activity
-  - term: visitor ID
-    meaning: a browser identifier used for video admission
+    meaning: the admin page for the voice balance
+  - term: SQLite
+    meaning: the embedded database in the file gitdiagram.db
+  - term: data folder
+    meaning: the folder that DATA_DIR names, which holds the database and all saved files
+    unapproved: [data directory, storage root]
+  - term: object store
+    meaning: the module that saves diagram artifacts as files under the data folder
+  - term: bucket
+    meaning: a top-level folder of the object store, either public or private
+  - term: etag
+    meaning: the SHA-256 digest of the stored bytes of an object
+  - term: lock
+    meaning: a row in the locks table that lets one holder work at a time
+  - term: paid run
+    meaning: a video generation that has made its first model call
+  - term: voice pause
+    meaning: the automatic stop of new videos while the narrator has no credit
+    unapproved: [kill switch]
+  - term: migration
+    meaning: a numbered change to the database schema
+  - term: schema version
+    meaning: the user_version number of the database
+  - term: gallery index
+    meaning: the video_index table with one card for each video
   - term: route
     meaning: a Next.js HTTP Route Handler
   - term: request
@@ -34,19 +52,13 @@ technical_nouns:
   - term: state
     meaning: the saved diagram, control, or session data used by a route
   - term: event
-    meaning: a typed message sent through a stream or analytics path
-  - term: feed
-    meaning: the sequence of live admin events
+    meaning: a typed message sent through a stream
   - term: build
     meaning: the compiled Next.js app
-  - term: binding
-    meaning: a Cloudflare Worker value or service supplied at deployment
   - term: port
     meaning: the TCP port of the app server
   - term: effort
     meaning: the reasoning effort selected for a model request
-  - term: activity
-    meaning: visitor or server actions shown in the operator dashboard
   - term: progress
     meaning: generation or render status sent to the browser
   - term: film
@@ -54,10 +66,29 @@ technical_nouns:
   - term: Mermaid
   - term: GitHub
   - term: OpenRouter
-  - term: PostHog
-  - term: R2
   - term: Upstash
+  - term: probe
+    meaning: the small test app in deploy/spike that checked the host
+  - term: log
+    meaning: the text file or stream where the app writes event lines
+  - term: environment variable
+    meaning: a named value in the process environment
+    unapproved: [env var]
+  - term: IIS
+    meaning: Internet Information Services, the Windows web server of the host
+  - term: standalone output
+    meaning: the self-contained server.js build that Next.js writes in .next/standalone
+  - term: package
+    meaning: the zip file that scripts/package-iis.ps1 makes for the host
+  - term: app pool
+    meaning: the IIS process group that runs the site and holds its environment variables
 technical_verbs:
+  - term: run
+    meaning: start a command or task
+  - term: extract
+    meaning: unpack the files of a zip into a folder
+  - term: restore
+    meaning: put saved files back in place
   - term: generate
     meaning: create a diagram or video from repository data
   - term: render

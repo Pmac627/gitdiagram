@@ -9,36 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AdminState } from "~/features/admin/types";
 import { AdminDashboard } from "./admin-dashboard";
-import { priorityHint } from "./people-panel";
-
-vi.mock("./use-live-site", async () => {
-  const { EMPTY_SITE } = await import("~/features/admin/live-link");
-  return {
-    useLiveSite: () => ({ ...EMPTY_SITE, status: "offline", latency: null }),
-  };
-});
 
 const adminState = (overrides: Partial<AdminState> = {}): AdminState => ({
   now: 0,
-  controls: {
-    videoAudience: "priority",
-    priorityPlaces: "cities",
-    videosPaused: false,
-    videoDailyLimit: null,
-    videoPersonDailyLimit: null,
-    videoPriorityPersonDailyLimit: null,
-    videoNetworkDailyLimit: null,
-    limitedCountryAccess: "some",
-    limitedCountryShare: null,
-  },
-  controlsUnreadable: false,
-  video: null,
   voicePausedUntil: null,
   voiceCreditUsd: null,
-  claudeCredit: "no-key",
-  diagramQuota: null,
-  presence: null,
-  deployment: { commit: null, region: null },
   ...overrides,
 });
 
@@ -100,8 +75,8 @@ describe("signing out everywhere", () => {
       .mocked(fetch)
       .mock.calls.filter(([, init]) => init?.method === "DELETE");
     expect(deletes.map(([path]) => path)).toEqual([
-      "/api/admin/session?everywhere=1",
-      "/api/admin/session?everywhere=1",
+      "/api/auth/session?everywhere=1",
+      "/api/auth/session?everywhere=1",
     ]);
   });
 
@@ -122,21 +97,63 @@ describe("signing out everywhere", () => {
   });
 });
 
-describe("the dashboard's warnings", () => {
-  it("warns when the switches shown could not be read", async () => {
-    vi.mocked(fetch).mockImplementation(async () =>
-      json(adminState({ controlsUnreadable: true })),
-    );
+describe("what the dashboard no longer shows", () => {
+  it("has no audience, place, limited-country or per-day limit controls", async () => {
     await renderDashboard();
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      /could not be read from Redis/,
+    for (const name of [
+      "Who can make new videos",
+      "Limited countries",
+      "Priority places",
+    ]) {
+      expect(screen.queryByRole("radiogroup", { name })).toBeNull();
+    }
+    for (const name of [
+      "New videos per day",
+      "Per person per day",
+      "Per priority person per day",
+      "Per connection per day (backstop)",
+      "Share let in each day (%)",
+    ]) {
+      expect(screen.queryByRole("textbox", { name })).toBeNull();
+    }
+  });
+
+  it("has no budget, MP4, reset or complimentary token tiles", async () => {
+    await renderDashboard();
+    expect(screen.queryByText(/Videos today/)).toBeNull();
+    expect(screen.queryByText(/MP4s today/)).toBeNull();
+    expect(screen.queryByText(/Free diagram tokens today/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Reset today's/ })).toBeNull();
+  });
+
+  // Phase 4 decision (1): the pause switch is gone. The voice balance stays,
+  // and so does the browser-only "admin controls on video pages" toggle.
+  it("has no pause switch, and keeps the voice balance and the admin-tools toggle", async () => {
+    await renderDashboard();
+    expect(
+      screen.queryByRole("switch", { name: "Pause all new videos" }),
+    ).toBeNull();
+    expect(screen.queryByText(/Pause all new videos/)).toBeNull();
+    expect(screen.getByText(/Voice balance/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", {
+        name: "Show admin controls on video pages",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("never posts to the removed controls route", async () => {
+    await renderDashboard();
+    const paths = vi.mocked(fetch).mock.calls.map(([path]) => String(path));
+
+    expect(paths.some((path) => path.includes("/api/admin/controls"))).toBe(
+      false,
     );
   });
 
-  it("explains priority places by the audience switch", () => {
-    expect(priorityHint("priority")).toMatch(/^The only places/);
-    expect(priorityHint("desktop")).toMatch(/elsewhere only desktops/);
-    expect(priorityHint("everyone")).toMatch(/^Anyone anywhere/);
-    expect(priorityHint(undefined)).toBe("People here get more videos a day.");
+  it("has no warning about unreadable switches", async () => {
+    await renderDashboard();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/live switches/i)).toBeNull();
   });
 });

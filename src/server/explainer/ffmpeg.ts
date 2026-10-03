@@ -12,7 +12,6 @@ import {
 } from "~/features/explainer/engine";
 import type { VideoArtifact } from "~/features/explainer/types";
 import { runProcess } from "~/server/child-process";
-import { deploymentHeaders } from "./render-origin";
 import { readVoiceClip } from "./store";
 
 // The ffmpeg half of the MP4 renderer: cutting a film into segments, mixing
@@ -166,7 +165,7 @@ async function mixSoundtrackInto(
     if (!isKnownEffect(name)) continue;
     const response = await fetch(
       `${origin}/video-engine/assets/sfx/${name}.mp3?v=${ENGINE_VERSION}`,
-      { headers: deploymentHeaders(), signal },
+      { signal },
     );
     if (!response.ok) continue;
     const path = join(dir, `sfx-${name}.mp3`);

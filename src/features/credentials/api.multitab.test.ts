@@ -8,8 +8,8 @@ type CredentialModule = Pick<
 >;
 type CredentialAction =
   | { action: "status" }
-  | { action: "set"; credential: "openai_api_key"; value: string }
-  | { action: "clear"; credential: "openai_api_key" };
+  | { action: "set"; credential: "github_pat"; value: string }
+  | { action: "clear"; credential: "github_pat" };
 
 const originalLocksDescriptor = Object.getOwnPropertyDescriptor(
   window.navigator,
@@ -30,7 +30,7 @@ afterEach(() => {
 describe("credential client API across browser contexts", () => {
   it("does not let a stale migration overwrite a newer save", async () => {
     const race = await startTwoContextRace((newerContext) =>
-      newerContext.saveCredential("openai_api_key", "replacement-openai"),
+      newerContext.saveCredential("github_pat", "replacement-github"),
     );
 
     race.finishStaleMigration();
@@ -39,22 +39,22 @@ describe("credential client API across browser contexts", () => {
     expect(race.actions).toEqual([
       {
         action: "set",
-        credential: "openai_api_key",
-        value: "legacy-openai",
+        credential: "github_pat",
+        value: "legacy-github",
       },
       {
         action: "set",
-        credential: "openai_api_key",
-        value: "replacement-openai",
+        credential: "github_pat",
+        value: "replacement-github",
       },
     ]);
-    expect(race.getStoredCredential()).toBe("replacement-openai");
-    expect(window.localStorage.getItem("openai_api_key")).toBeNull();
+    expect(race.getStoredCredential()).toBe("replacement-github");
+    expect(window.localStorage.getItem("github_pat")).toBeNull();
   });
 
   it("does not let a stale migration resurrect a credential after clear", async () => {
     const race = await startTwoContextRace((newerContext) =>
-      newerContext.clearCredential("openai_api_key"),
+      newerContext.clearCredential("github_pat"),
     );
 
     race.finishStaleMigration();
@@ -63,16 +63,16 @@ describe("credential client API across browser contexts", () => {
     expect(race.actions).toEqual([
       {
         action: "set",
-        credential: "openai_api_key",
-        value: "legacy-openai",
+        credential: "github_pat",
+        value: "legacy-github",
       },
       {
         action: "clear",
-        credential: "openai_api_key",
+        credential: "github_pat",
       },
     ]);
     expect(race.getStoredCredential()).toBeNull();
-    expect(window.localStorage.getItem("openai_api_key")).toBeNull();
+    expect(window.localStorage.getItem("github_pat")).toBeNull();
   });
 });
 
@@ -80,7 +80,7 @@ async function startTwoContextRace(
   runNewerMutation: (context: CredentialModule) => Promise<unknown>,
 ) {
   const lockRequest = installOriginLockManager();
-  window.localStorage.setItem("openai_api_key", "legacy-openai");
+  window.localStorage.setItem("github_pat", "legacy-github");
 
   vi.resetModules();
   const staleContext = await import("~/features/credentials/api");
@@ -98,7 +98,7 @@ async function startTwoContextRace(
 
       if (
         action.action === "set" &&
-        action.value === "legacy-openai" &&
+        action.value === "legacy-github" &&
         !staleMigrationFinished
       ) {
         return new Promise<Response>((resolve) => {
@@ -129,7 +129,7 @@ async function startTwoContextRace(
     completion: Promise.all([staleMigration, newerMutation]),
     finishStaleMigration() {
       staleMigrationFinished = true;
-      storedCredential = "legacy-openai";
+      storedCredential = "legacy-github";
       staleMigrationResolve(credentialResponse(storedCredential));
     },
     getStoredCredential: () => storedCredential,
@@ -168,8 +168,10 @@ function credentialResponse(storedCredential: string | null): Response {
   return Response.json({
     ok: true,
     credentials: {
-      openaiApiKeyConfigured: storedCredential !== null,
-      githubPatConfigured: false,
+      openaiApiKeyConfigured: false,
+      githubPatConfigured: storedCredential !== null,
+      configuredProvider: "openai",
+      apiKeyProvider: null,
     },
   });
 }

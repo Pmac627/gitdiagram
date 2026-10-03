@@ -26,7 +26,6 @@ const state = (extra: Partial<ExplainerApi.ExplainerVideoState> = {}) => ({
   video: null,
   canGenerate: true,
   paused: null,
-  anyDevice: true,
   generating: false,
   ...extra,
 });
@@ -184,6 +183,48 @@ describe("finished runs", () => {
     expect(renderHook(() => useVideoRun("acme", repo)).result.current).toBe(
       undefined,
     );
+  });
+});
+
+describe("starting a run", () => {
+  const optionsOf = (): { regenerate?: boolean } | undefined =>
+    api.streamExplainerVideo.mock.calls[0]![4] as
+      { regenerate?: boolean } | undefined;
+
+  it("does not ask to replace anything by default", async () => {
+    api.streamExplainerVideo.mockResolvedValue(undefined);
+    await act(async () => startVideoRun("acme", repo));
+
+    expect(api.streamExplainerVideo).toHaveBeenCalledTimes(1);
+    expect(optionsOf()?.regenerate).not.toBe(true);
+  });
+
+  it("asks the server to replace the video when told to regenerate", async () => {
+    api.streamExplainerVideo.mockResolvedValue(undefined);
+    await act(async () =>
+      startVideoRun("acme", repo, video("2026-09-24T00:00:00.000Z"), {
+        regenerate: true,
+      }),
+    );
+
+    expect(api.streamExplainerVideo).toHaveBeenCalledTimes(1);
+    expect(optionsOf()).toEqual({ regenerate: true });
+  });
+
+  it("shows the stored video when a run without regenerate is answered exists", async () => {
+    const stored = video("2026-09-24T00:00:00.000Z");
+    api.fetchExplainerVideo.mockResolvedValue(state({ video: stored }));
+    const view = await run(
+      new VideoRequestError(
+        "This repository already has a video.",
+        409,
+        false,
+        "exists",
+      ),
+    );
+
+    expect(view.result.current).toEqual({ kind: "ready", video: stored });
+    expect(optionsOf()?.regenerate).not.toBe(true);
   });
 });
 

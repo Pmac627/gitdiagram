@@ -6,6 +6,7 @@ import {
 } from "~/server/generate/types";
 import { getStoredDiagramArtifact } from "~/server/storage/artifact-store";
 
+import { errorText } from "~/server/log";
 export type RepoSocialMetadata = {
   defaultBranch: string | null;
   isPrivate: boolean | null;
@@ -42,7 +43,7 @@ export async function getRepoSocialMetadata(
     console.warn(
       JSON.stringify({
         event: "og.repo_metadata.fetch_failed",
-        error: error instanceof Error ? error.message : "Unknown error",
+        error: errorText(error),
       }),
     );
 

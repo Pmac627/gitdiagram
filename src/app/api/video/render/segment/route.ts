@@ -1,7 +1,10 @@
 import { readIntEnv } from "~/server/env";
 import { jsonErrorResponse } from "~/server/http/same-origin-json";
 import { errorText, logEvent } from "~/server/log";
-import { isVideoExplainerEnabled } from "~/server/explainer/config";
+import {
+  isVideoExplainerEnabled,
+  isVideoRenderEnabled,
+} from "~/server/explainer/config";
 import { storePoster } from "~/server/explainer/posters";
 import { renderHostStats, renderVideoSegment } from "~/server/explainer/render";
 import { internalOrigin } from "~/server/explainer/render-origin";
@@ -30,7 +33,7 @@ let running = 0;
 function renderLimit(): number {
   return readIntEnv(
     "VIDEO_SEGMENT_CONCURRENCY",
-    process.env.NODE_ENV === "production" ? 2 : Infinity,
+    process.env.NODE_ENV === "production" ? 1 : Infinity,
     { min: 1 },
   );
 }
@@ -56,6 +59,11 @@ function busyResponse(): Response {
  * ends with the segment itself; the render stops if the caller goes away.
  */
 export async function POST(request: Request): Promise<Response> {
+  if (!isVideoRenderEnabled())
+    return Response.json(
+      { ok: false, error: "MP4 rendering is turned off on this server." },
+      { status: 501, headers: { "Cache-Control": "no-store" } },
+    );
   if (!isVideoExplainerEnabled())
     return jsonErrorResponse("Explainer videos are not enabled.", 404);
   let body: unknown;

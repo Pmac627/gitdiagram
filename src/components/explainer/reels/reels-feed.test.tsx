@@ -58,7 +58,6 @@ const page = (cards: VideoCard[]): VideoPage => ({
   totalPages: 1,
   sort: "stars_desc",
   q: "",
-  minStars: 0,
 });
 
 beforeEach(() => {

@@ -1,40 +1,34 @@
-// Run after `bun run build`. The MP4 renderer needs native binaries that Next
-// only ships because next.config.js lists them in outputFileTracingIncludes.
+// Run after `bun run build`. The MP4 renderer needs the ffmpeg binary, which
+// Next only ships because next.config.js lists it in outputFileTracingIncludes.
 // Both failure modes are silent: ffmpeg-static only warns when its binary
 // download fails, and a traced path that does not exist is skipped. Either way
-// the deploy succeeds and renders fail in production, so fail the build here.
+// renders fail in production, so fail the build here.
 //
-// The other way round, the render route only joins segments: it must not ship
-// Chromium (its binary, or the JS that launches it), and no render function
-// may quietly grow past its size ceiling.
+// The other way round, the render and generate routes only join segments: they
+// must not ship the JS that launches Chromium (puppeteer-core), and no render
+// function may quietly grow past its size ceiling.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 // Real binaries are tens of megabytes; anything tiny is a stub or a failed
 // download.
 const ffmpeg = {
-  file: "node_modules/ffmpeg-static/ffmpeg",
-  minBytes: 10_000_000,
-};
-const chromium = {
-  file: "node_modules/@sparticuz/chromium/bin/chromium.br",
+  // The Windows binary has an extension.
+  file: `node_modules/ffmpeg-static/ffmpeg${process.platform === "win32" ? ".exe" : ""}`,
   minBytes: 10_000_000,
 };
 
-// Anything under these paths means a function ships Chromium.
-const chromiumPackages = [
-  "node_modules/@sparticuz/chromium/",
-  "node_modules/puppeteer-core/",
-];
+// Anything under these paths means a function ships the Chromium launcher.
+const chromiumPackages = ["node_modules/puppeteer-core/"];
 
 const MB = 1_000_000;
 
 // The render route only joins segments, so it ships ffmpeg alone; Chromium
 // runs in the segment route (frames and posters). Generate needs ffmpeg for
 // the narration and asks the segment route for its poster, so it ships no
-// Chromium either. Ceilings are the traced files' total size on disk
+// Chromium launcher either. Ceilings are the traced files' total size on disk
 // (uncompressed) apart from the ffmpeg binary, whose size depends on the
-// platform (about 46 MB on macOS, 80 MB on Linux CI), with some room over
+// platform (about 46 MB on macOS, 80 MB on Linux CI; no Chromium is bundled), with some room over
 // today's size; raise one only on purpose.
 const routes = [
   {
@@ -45,9 +39,9 @@ const routes = [
   },
   {
     route: "api/video/render/segment",
-    requiredFiles: [ffmpeg, chromium],
+    requiredFiles: [ffmpeg],
     forbidden: [],
-    maxBytes: 95 * MB,
+    maxBytes: 12 * MB,
   },
   {
     route: "api/video/generate",
@@ -89,7 +83,7 @@ for (const { route, requiredFiles, forbidden, maxBytes } of routes) {
   );
   if (shipped.length) {
     failures.push(
-      `/${route} must not ship Chromium, but traces ${shipped.slice(0, 5).join(", ")}${shipped.length > 5 ? ` and ${shipped.length - 5} more` : ""}.`,
+      `/${route} must not ship the Chromium launcher, but traces ${shipped.slice(0, 5).join(", ")}${shipped.length > 5 ? ` and ${shipped.length - 5} more` : ""}.`,
     );
   }
   let bytes = 0;
@@ -115,6 +109,6 @@ if (failures.length) {
   process.exitCode = 1;
 } else {
   console.log(
-    "Video render routes trace the ffmpeg and Chromium binaries they need, and only those.",
+    "Video render routes trace the ffmpeg binary they need and keep the Chromium launcher out of the render and generate routes.",
   );
 }

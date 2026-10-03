@@ -20,6 +20,8 @@ describe("credential client API", () => {
     const credentials = {
       openaiApiKeyConfigured: true,
       githubPatConfigured: false,
+      configuredProvider: "openai",
+      apiKeyProvider: "openai",
     };
     const fetchMock = vi.fn(async () =>
       Response.json({ ok: true, credentials }),
@@ -27,7 +29,7 @@ describe("credential client API", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(getCredentialStatus()).resolves.toEqual(credentials);
-    await saveCredential("openai_api_key", "sk-secret");
+    await saveCredential("openai_api_key", "sk-secret", "openai");
     await clearCredential("github_pat");
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/credentials", {
@@ -44,6 +46,7 @@ describe("credential client API", () => {
         action: "set",
         credential: "openai_api_key",
         value: "sk-secret",
+        provider: "openai",
       }),
     });
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/credentials", {
@@ -68,7 +71,7 @@ describe("credential client API", () => {
     );
   });
 
-  it("migrates legacy credentials and removes each saved value", async () => {
+  it("migrates the legacy GitHub token and drops the legacy API key without uploading it", async () => {
     window.localStorage.setItem("openai_api_key", "legacy-openai");
     window.localStorage.setItem("github_pat", "legacy-github");
     const fetchMock = vi.fn(
@@ -78,6 +81,8 @@ describe("credential client API", () => {
           credentials: {
             openaiApiKeyConfigured: true,
             githubPatConfigured: true,
+            configuredProvider: "openai",
+            apiKeyProvider: "openai",
           },
         }),
     );
@@ -87,15 +92,10 @@ describe("credential client API", () => {
 
     expect(window.localStorage.getItem("openai_api_key")).toBeNull();
     expect(window.localStorage.getItem("github_pat")).toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(
       fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body))),
     ).toEqual([
-      {
-        action: "set",
-        credential: "openai_api_key",
-        value: "legacy-openai",
-      },
       {
         action: "set",
         credential: "github_pat",
@@ -120,6 +120,8 @@ describe("credential client API", () => {
               credentials: {
                 openaiApiKeyConfigured: true,
                 githubPatConfigured: false,
+                configuredProvider: "openai",
+                apiKeyProvider: "openai",
               },
             });
       }),
@@ -132,7 +134,7 @@ describe("credential client API", () => {
   });
 
   it("keeps a legacy value until its server save completes", async () => {
-    window.localStorage.setItem("openai_api_key", "legacy-openai");
+    window.localStorage.setItem("github_pat", "legacy-github");
     let acceptSave!: (response: Response) => void;
     vi.stubGlobal(
       "fetch",
@@ -146,26 +148,28 @@ describe("credential client API", () => {
 
     const migration = migrateLegacyCredentialStorage();
 
-    expect(window.localStorage.getItem("openai_api_key")).toBe("legacy-openai");
+    expect(window.localStorage.getItem("github_pat")).toBe("legacy-github");
     acceptSave(
       Response.json({
         ok: true,
         credentials: {
-          openaiApiKeyConfigured: true,
-          githubPatConfigured: false,
+          openaiApiKeyConfigured: false,
+          githubPatConfigured: true,
+          configuredProvider: "openai",
+          apiKeyProvider: null,
         },
       }),
     );
     await expect(migration).resolves.toBe(true);
-    expect(window.localStorage.getItem("openai_api_key")).toBeNull();
+    expect(window.localStorage.getItem("github_pat")).toBeNull();
   });
 
   it("finishes a pending migration write before saving a replacement", async () => {
-    window.localStorage.setItem("openai_api_key", "legacy-openai");
+    window.localStorage.setItem("github_pat", "legacy-github");
     let acceptMigration!: (response: Response) => void;
     const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
       const action = JSON.parse(String(init?.body)) as CredentialAction;
-      if (action.action === "set" && action.value === "legacy-openai") {
+      if (action.action === "set" && action.value === "legacy-github") {
         return new Promise<Response>((resolve) => {
           acceptMigration = resolve;
         });
@@ -174,28 +178,30 @@ describe("credential client API", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const replacement = saveCredential("openai_api_key", "replacement-openai");
+    const replacement = saveCredential("github_pat", "replacement-github");
 
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(parseCredentialAction(fetchMock.mock.calls[0]?.[1])).toEqual({
       action: "set",
-      credential: "openai_api_key",
-      value: "legacy-openai",
+      credential: "github_pat",
+      value: "legacy-github",
     });
 
     acceptMigration(configuredCredentialResponse());
     await expect(replacement).resolves.toEqual({
       openaiApiKeyConfigured: true,
       githubPatConfigured: true,
+      configuredProvider: "openai",
+      apiKeyProvider: "openai",
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(parseCredentialAction(fetchMock.mock.calls[1]?.[1])).toEqual({
       action: "set",
-      credential: "openai_api_key",
-      value: "replacement-openai",
+      credential: "github_pat",
+      value: "replacement-github",
     });
-    expect(window.localStorage.getItem("openai_api_key")).toBeNull();
+    expect(window.localStorage.getItem("github_pat")).toBeNull();
   });
 
   it("finishes a pending migration write before clearing a credential", async () => {
@@ -225,6 +231,8 @@ describe("credential client API", () => {
     await expect(clearing).resolves.toEqual({
       openaiApiKeyConfigured: true,
       githubPatConfigured: true,
+      configuredProvider: "openai",
+      apiKeyProvider: "openai",
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -236,7 +244,7 @@ describe("credential client API", () => {
   });
 
   it("removes a stale legacy value after an explicit save following migration failure", async () => {
-    window.localStorage.setItem("openai_api_key", "legacy-openai");
+    window.localStorage.setItem("github_pat", "legacy-github");
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(new Response(null, { status: 503 }))
@@ -244,19 +252,21 @@ describe("credential client API", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
-      saveCredential("openai_api_key", "replacement-openai"),
+      saveCredential("github_pat", "replacement-github"),
     ).resolves.toEqual({
       openaiApiKeyConfigured: true,
       githubPatConfigured: true,
+      configuredProvider: "openai",
+      apiKeyProvider: "openai",
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(parseCredentialAction(fetchMock.mock.calls[1]?.[1])).toEqual({
       action: "set",
-      credential: "openai_api_key",
-      value: "replacement-openai",
+      credential: "github_pat",
+      value: "replacement-github",
     });
-    expect(window.localStorage.getItem("openai_api_key")).toBeNull();
+    expect(window.localStorage.getItem("github_pat")).toBeNull();
   });
 
   it("removes a stale legacy value after an explicit clear following migration failure", async () => {
@@ -270,6 +280,8 @@ describe("credential client API", () => {
           credentials: {
             openaiApiKeyConfigured: false,
             githubPatConfigured: false,
+            configuredProvider: "openai",
+            apiKeyProvider: null,
           },
         }),
       );
@@ -278,6 +290,8 @@ describe("credential client API", () => {
     await expect(clearCredential("github_pat")).resolves.toEqual({
       openaiApiKeyConfigured: false,
       githubPatConfigured: false,
+      configuredProvider: "openai",
+      apiKeyProvider: null,
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -309,6 +323,8 @@ function configuredCredentialResponse(): Response {
     credentials: {
       openaiApiKeyConfigured: true,
       githubPatConfigured: true,
+      configuredProvider: "openai",
+      apiKeyProvider: "openai",
     },
   });
 }

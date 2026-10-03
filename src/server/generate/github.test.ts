@@ -576,9 +576,10 @@ describe("getGithubData repository input bounds", () => {
   });
 
   it("keeps the GitHub error body out of the thrown message", async () => {
+    // Built at run time so the test file does not trip secret scanners.
+    const realisticToken = `ghs_${"A1b2C3d4E5f6".repeat(3)}`;
     const secretBody = JSON.stringify({
-      message:
-        "API rate limit exceeded for installation ID 12345678 on token ghs_serversecret.",
+      message: `API rate limit exceeded for installation ID 12345678 on token ghs_serversecret and ${realisticToken}.`,
       documentation_url: "https://docs.github.com/rest/overview",
     });
     const errorSpy = vi
@@ -599,10 +600,87 @@ describe("getGithubData repository input bounds", () => {
     );
     expect(thrown).not.toContain("ghs_serversecret");
     expect(thrown).not.toContain("12345678");
-    // The body is still recoverable from the server log.
-    expect(errorSpy.mock.calls.flat().join(" ")).toContain("ghs_serversecret");
+    // The server log keeps the diagnosis but never a token (step 27).
+    const logged = errorSpy.mock.calls.flat().join(" ");
+    expect(logged).toContain("API rate limit exceeded");
+    expect(logged).not.toContain(realisticToken);
     errorSpy.mockRestore();
   });
+
+  it("scrubs tokens, the caller PAT and env keys from the logged GitHub body", async () => {
+    const callerPat = "caller-gh-pat-5511aabb";
+    const envPat = "env-github-pat-0005-plain";
+    const ghToken = `ghs_${"a1B2c3D4e5".repeat(4)}`;
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    vi.stubEnv("GITHUB_PAT", envPat);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              message: `Bad credentials for ${callerPat} and ${envPat}; Authorization: Bearer ${ghToken}`,
+            }),
+            { status: 401 },
+          ),
+      ),
+    );
+
+    try {
+      await expect(getGithubData("acme", "demo", callerPat)).rejects.toThrow(
+        "GitHub request failed (401). Please retry.",
+      );
+
+      const logged = errorSpy.mock.calls.flat().join(" ");
+
+      expect(logged).toContain("generate.github.request_failed");
+      expect(logged).toContain("Bad credentials");
+      expect(logged).not.toContain(callerPat);
+      expect(logged).not.toContain(envPat);
+      expect(logged).not.toContain(ghToken);
+    } finally {
+      vi.unstubAllEnvs();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("scrubs the exact outgoing credential when GitHub echoes it back", async () => {
+    // Matches no token pattern and is not in the environment, so only the
+    // outgoing Authorization header can tell the log what to remove.
+    const outgoing = "plainoutgoingcredential";
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    getGitHubApiHeaders.mockResolvedValue({
+      Authorization: `token ${outgoing}`,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ message: `Bad credentials: ${outgoing}` }),
+            { status: 401 },
+          ),
+      ),
+    );
+
+    try {
+      await expect(getGithubData("acme", "demo")).rejects.toThrow(
+        "GitHub request failed (401). Please retry.",
+      );
+
+      const logged = errorSpy.mock.calls.flat().join(" ");
+
+      expect(logged).toContain("Bad credentials");
+      expect(logged).not.toContain(outgoing);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it.each([401, 403, 404])(
     "recovers public repository access when a saved token returns %s",
     async (status) => {

@@ -60,7 +60,6 @@ function createBrowseResult(
     totalPages: overrides.totalPages ?? 1,
     sort: overrides.sort ?? "recent_desc",
     q: overrides.q ?? "",
-    minStars: overrides.minStars ?? 0,
   };
 }
 
@@ -339,6 +338,22 @@ describe("BrowseCatalog", () => {
     expect(window.location.search).toBe("?q=acme");
   });
 
+  it("renders no minimum stars filter and never sends minStars", async () => {
+    window.history.replaceState(null, "", "/browse?minStars=100");
+    mockFetch(() => createBrowseResult([createEntry("repo-1")]));
+
+    render(<BrowseCatalog initialQuery={{ minStars: 100 } as never} />);
+
+    expect(await screen.findByText("vercel/repo-1")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/min(imum|.)? stars/i)).toBeNull();
+    expect(screen.queryByText(/minimum stars/i)).toBeNull();
+    expect(screen.queryByDisplayValue("100+")).toBeNull();
+    expect(window.location.search).not.toContain("minStars");
+    for (const call of fetchSpy.mock.calls) {
+      expect(String(call[0])).not.toContain("minStars");
+    }
+  });
+
   it("uses server pagination and preserves filters in the URL", async () => {
     mockFetch((url) => {
       const page = Number.parseInt(url.searchParams.get("page") ?? "1", 10);
@@ -348,7 +363,6 @@ describe("BrowseCatalog", () => {
         totalPages: 3,
         q: "vercel",
         sort: "stars_desc",
-        minStars: 100,
       });
     });
 
@@ -357,7 +371,6 @@ describe("BrowseCatalog", () => {
         initialQuery={{
           q: "vercel",
           sort: "stars_desc",
-          minStars: 100,
           page: "2",
         }}
       />,
@@ -367,9 +380,7 @@ describe("BrowseCatalog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Previous" }));
 
     expect(await screen.findByText("Page 1 of 3")).toBeInTheDocument();
-    expect(window.location.search).toBe(
-      "?q=vercel&sort=stars_desc&minStars=100",
-    );
+    expect(window.location.search).toBe("?q=vercel&sort=stars_desc");
     const firstRow = screen.getByText("vercel/repo-1").closest("tr");
 
     expect(firstRow).not.toBeNull();
@@ -385,7 +396,6 @@ describe("BrowseCatalog", () => {
       JSON.stringify({
         q: "vercel",
         sort: "stars_desc",
-        minStars: 100,
         page: 2,
       }),
     );
@@ -399,7 +409,6 @@ describe("BrowseCatalog", () => {
         totalPages: 2,
         q: "vercel",
         sort: "stars_desc",
-        minStars: 100,
       }),
     );
 
@@ -407,18 +416,16 @@ describe("BrowseCatalog", () => {
 
     expect(await screen.findByRole("searchbox")).toHaveValue("vercel");
     expect(screen.getByDisplayValue("Most Stars")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("100+")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("100+")).not.toBeInTheDocument();
     expect(await screen.findByText("Page 2 of 2")).toBeInTheDocument();
-    expect(window.location.search).toBe(
-      "?q=vercel&sort=stars_desc&minStars=100&page=2",
-    );
+    expect(window.location.search).toBe("?q=vercel&sort=stars_desc&page=2");
   });
 
   it("prefers the live URL page over stale initial query state on mount", async () => {
     window.history.replaceState(
       null,
       "",
-      "/browse?q=vercel&sort=stars_desc&minStars=100&page=2",
+      "/browse?q=vercel&sort=stars_desc&page=2",
     );
     mockFetch(() =>
       createBrowseResult([createEntry("repo-21")], {
@@ -427,7 +434,6 @@ describe("BrowseCatalog", () => {
         totalPages: 2,
         q: "vercel",
         sort: "stars_desc",
-        minStars: 100,
       }),
     );
 
@@ -436,7 +442,6 @@ describe("BrowseCatalog", () => {
         initialQuery={{
           q: "vercel",
           sort: "stars_desc",
-          minStars: 100,
           page: "1",
         }}
       />,
@@ -467,7 +472,7 @@ describe("BrowseCatalog", () => {
     expect(previewFetches).toBe(1);
     expect(previewRequestInits[0]).toEqual(
       expect.objectContaining({
-        credentials: "omit",
+        credentials: "same-origin",
         method: "GET",
         signal: expect.any(AbortSignal),
       }),

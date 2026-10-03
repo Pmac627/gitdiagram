@@ -6,17 +6,17 @@ import type {
   VideoRenderEvent,
 } from "./types";
 
-/** Why a visitor cannot start a video: early access, device, or today's budget. */
-export type VideoPausedReason = "audience" | "device" | "limit";
+/** Why no new video can start now: the narrator is out of credit. */
+export type VideoPausedReason = "limit";
 
 export interface ExplainerVideoState {
   video: VideoArtifact | null;
   canGenerate: boolean;
   paused: VideoPausedReason | null;
-  /** This visitor may make videos from any device, tablets included. */
-  anyDevice: boolean;
   /** No video yet, but one is being made for this repo right now. */
   generating: boolean;
+  /** The server can render MP4s and posters (VIDEO_RENDER_ENABLED). */
+  renderEnabled: boolean;
 }
 
 export type RenderFormat = "landscape" | "vertical";
@@ -68,8 +68,8 @@ export async function fetchExplainerVideo(
     video?: VideoArtifact | null;
     canGenerate?: boolean;
     paused?: VideoPausedReason | null;
-    anyDevice?: boolean;
     generating?: boolean;
+    renderEnabled?: boolean;
     error?: string;
   };
   if (!response.ok || !body.ok)
@@ -79,8 +79,8 @@ export async function fetchExplainerVideo(
     video,
     canGenerate: Boolean(body.canGenerate),
     paused: body.paused ?? null,
-    anyDevice: Boolean(body.anyDevice),
     generating: !video && body.generating === true,
+    renderEnabled: body.renderEnabled === true,
   };
 }
 
@@ -127,16 +127,23 @@ async function streamEvents<T extends { status: string }>(
   if (!finished) throw new VideoStreamEndedError(fallbackError);
 }
 
-/** Start generation and relay each server-sent progress event. */
+/**
+ * Start generation and relay each server-sent progress event. Replacing a
+ * stored video needs `regenerate: true`; without it the server answers 409
+ * "exists".
+ */
 export function streamExplainerVideo(
   username: string,
   repo: string,
   onEvent: (event: VideoGenerationEvent) => void,
   signal?: AbortSignal,
+  options?: { regenerate?: boolean },
 ): Promise<void> {
   return streamEvents(
     "/api/video/generate",
-    { username, repo },
+    options?.regenerate
+      ? { username, repo, regenerate: true }
+      : { username, repo },
     onEvent,
     "Could not start video generation.",
     signal,

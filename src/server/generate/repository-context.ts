@@ -1,5 +1,6 @@
 import type { GithubData } from "./github";
 import type { AIProvider } from "./model-config";
+import { redactSecrets, totalFindings } from "./secret-scan";
 
 export const MAX_SOURCE_CHARACTERS = 48_000;
 export const MAX_SOURCE_FILES = 12;
@@ -177,13 +178,18 @@ export function prepareRepositoryContext(data: GithubData) {
     paths.push(path);
     characters += path.length + 1;
   }
+  // Redact after the cut so only the text that reaches the prompt is scanned.
+  const readme = redactSecrets(
+    data.readme.length > MAX_README_CHARACTERS
+      ? `${data.readme.slice(0, MAX_README_CHARACTERS)}\n[README excerpt ends here.]`
+      : data.readme,
+  );
+
   return {
     selectedPaths,
     fileTree: paths.sort().join("\n"),
-    readme:
-      data.readme.length > MAX_README_CHARACTERS
-        ? `${data.readme.slice(0, MAX_README_CHARACTERS)}\n[README excerpt ends here.]`
-        : data.readme,
+    readme: readme.text,
+    redactedSecretCount: totalFindings(readme.findings),
     // GitHub's own partial listing counts too: the tree excerpt may then
     // miss parts of the repository even when every listed path fits.
     treeTruncated:

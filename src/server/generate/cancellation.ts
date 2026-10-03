@@ -1,11 +1,17 @@
-import { upstashCommand, upstashEval } from "~/server/storage/upstash";
+import { getDb, withImmediateTransaction } from "~/server/storage/db";
+import {
+  kvRead,
+  kvRemove,
+  kvWrite,
+  kvWriteIfAbsent,
+} from "~/server/storage/kv";
 
 export const GENERATION_CANCELLATION_TTL_SECONDS = 10 * 60;
 export const GENERATION_ACTIVE_TTL_SECONDS = 6 * 60;
 /**
  * A cancel request can race ahead of the generation route: the client's
- * keepalive cancel POST may land while request admission is still mid-Redis
- * round trips, before the active session key exists. Such an early cancel is
+ * keepalive cancel POST may land while request admission is still busy
+ * and has not registered its active session yet. Such an early cancel is
  * recorded as a token-bound pending marker with a short TTL; registration
  * atomically promotes a matching marker into a real cancellation flag so the
  * generation observes it on its first poll instead of running to the deadline.
@@ -13,7 +19,7 @@ export const GENERATION_ACTIVE_TTL_SECONDS = 6 * 60;
 export const GENERATION_PENDING_CANCELLATION_TTL_SECONDS = 60;
 /**
  * Cancellation is user-initiated and rare, so a flat one-second poll spends
- * hundreds of billed Redis round trips per generation to detect an event that
+ * hundreds of database reads per generation to detect an event that
  * usually never happens. Stay responsive while the user is most likely to hit
  * cancel, then back off for the long tail of a slow generation.
  */
@@ -32,49 +38,6 @@ function pollIntervalForElapsed(elapsedMs: number): number {
   return GENERATION_CANCELLATION_MAX_POLL_INTERVAL_MS;
 }
 
-// KEYS[1] = active key, KEYS[2] = cancel key.
-// ARGV[1] = cancel token, ARGV[2] = cancellation TTL, ARGV[3] = pending TTL.
-// When no active session exists yet, the cancel is stored as the raw token
-// (never "1", so polling ignores it) for REGISTER_ACTIVE_SCRIPT to promote.
-const MARK_CANCELLED_SCRIPT = `
-local active = redis.call("GET", KEYS[1])
-if active == ARGV[1] then
-  redis.call("SET", KEYS[2], "1", "EX", ARGV[2])
-  return 1
-end
-if active then
-  return 0
-end
-redis.call("SET", KEYS[2], ARGV[1], "EX", ARGV[3])
-return 0
-`;
-
-// KEYS[1] = active key, KEYS[2] = cancel key.
-// ARGV[1] = cancel token, ARGV[2] = active TTL, ARGV[3] = cancellation TTL.
-// Registration promotes a token-matching pending cancel into a real flag and
-// clears any stale marker left over from an earlier session with this id.
-const REGISTER_ACTIVE_SCRIPT = `
-if not redis.call("SET", KEYS[1], ARGV[1], "EX", ARGV[2], "NX") then
-  return 0
-end
-local pending = redis.call("GET", KEYS[2])
-if pending == ARGV[1] then
-  redis.call("SET", KEYS[2], "1", "EX", ARGV[3])
-elseif pending then
-  redis.call("DEL", KEYS[2])
-end
-return 1
-`;
-
-const UNREGISTER_ACTIVE_SCRIPT = `
-if redis.call("GET", KEYS[1]) ~= ARGV[1] then
-  return 0
-end
-redis.call("DEL", KEYS[1])
-redis.call("DEL", KEYS[2])
-return 1
-`;
-
 function getActiveGenerationKey(sessionId: string): string {
   return `generation:active:${sessionId}`;
 }
@@ -83,57 +46,116 @@ function getCancellationKey(sessionId: string): string {
   return `generation:cancel:${sessionId}`;
 }
 
+const seconds = (value: number) => value * 1_000;
+
+/**
+ * Registers the active session once (never replacing a collision). A pending
+ * cancel with the same token becomes a real flag; one with another token is a
+ * stale marker from an earlier session with this id and is cleared.
+ */
 export async function registerActiveGeneration(
   sessionId: string,
   cancelToken: string,
 ): Promise<boolean> {
-  const result = await upstashEval<number>({
-    script: REGISTER_ACTIVE_SCRIPT,
-    keys: [getActiveGenerationKey(sessionId), getCancellationKey(sessionId)],
-    args: [
-      cancelToken,
-      GENERATION_ACTIVE_TTL_SECONDS,
-      GENERATION_CANCELLATION_TTL_SECONDS,
-    ],
+  const now = Date.now();
+
+  return withImmediateTransaction((db) => {
+    // Keeps the table small: expired rows read as absent anyway.
+    db.prepare("DELETE FROM kv WHERE expires_at <= ?").run(now);
+
+    if (
+      !kvWriteIfAbsent(
+        db,
+        getActiveGenerationKey(sessionId),
+        cancelToken,
+        seconds(GENERATION_ACTIVE_TTL_SECONDS),
+        now,
+      )
+    ) {
+      return false;
+    }
+
+    const cancelKey = getCancellationKey(sessionId);
+    const pending = kvRead(db, cancelKey, now);
+
+    if (pending === cancelToken) {
+      kvWrite(
+        db,
+        cancelKey,
+        "1",
+        seconds(GENERATION_CANCELLATION_TTL_SECONDS),
+        now,
+      );
+    } else if (pending !== null) {
+      kvRemove(db, cancelKey);
+    }
+
+    return true;
   });
-  return result === 1;
 }
 
+/**
+ * Cancels an active session when the token matches (true). With another
+ * token nothing changes (false). With no active session the cancel is stored
+ * as the raw token (never "1", so polling ignores it) for registration to
+ * promote, and the result is false.
+ */
 export async function markGenerationCancelled(
   sessionId: string,
   cancelToken: string,
 ): Promise<boolean> {
-  const result = await upstashEval<number>({
-    script: MARK_CANCELLED_SCRIPT,
-    keys: [getActiveGenerationKey(sessionId), getCancellationKey(sessionId)],
-    args: [
-      cancelToken,
-      GENERATION_CANCELLATION_TTL_SECONDS,
-      GENERATION_PENDING_CANCELLATION_TTL_SECONDS,
-    ],
+  const now = Date.now();
+
+  return withImmediateTransaction((db) => {
+    const active = kvRead(db, getActiveGenerationKey(sessionId), now);
+    const cancelKey = getCancellationKey(sessionId);
+
+    if (active === cancelToken) {
+      kvWrite(
+        db,
+        cancelKey,
+        "1",
+        seconds(GENERATION_CANCELLATION_TTL_SECONDS),
+        now,
+      );
+
+      return true;
+    }
+
+    if (active === null) {
+      kvWrite(
+        db,
+        cancelKey,
+        cancelToken,
+        seconds(GENERATION_PENDING_CANCELLATION_TTL_SECONDS),
+        now,
+      );
+    }
+
+    return false;
   });
-  return result === 1;
 }
 
 export async function unregisterActiveGeneration(
   sessionId: string,
   cancelToken: string,
 ): Promise<void> {
-  await upstashEval<number>({
-    script: UNREGISTER_ACTIVE_SCRIPT,
-    keys: [getActiveGenerationKey(sessionId), getCancellationKey(sessionId)],
-    args: [cancelToken],
+  const now = Date.now();
+
+  withImmediateTransaction((db) => {
+    if (kvRead(db, getActiveGenerationKey(sessionId), now) !== cancelToken) {
+      return;
+    }
+
+    kvRemove(db, getActiveGenerationKey(sessionId));
+    kvRemove(db, getCancellationKey(sessionId));
   });
 }
 
 export async function isGenerationCancelled(
   sessionId: string,
 ): Promise<boolean> {
-  const result = await upstashCommand<string | null>([
-    "GET",
-    getCancellationKey(sessionId),
-  ]);
-  return result === "1";
+  return kvRead(getDb(), getCancellationKey(sessionId), Date.now()) === "1";
 }
 
 export function startGenerationCancellationPolling(params: {
@@ -145,7 +167,7 @@ export function startGenerationCancellationPolling(params: {
   let elapsedMs = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
-  // Each poll schedules the next one only after it settles, so a slow Redis
+  // Each poll schedules the next one only after it settles, so a slow database
   // round trip can never stack overlapping requests.
   const scheduleNextPoll = () => {
     if (stopped) {

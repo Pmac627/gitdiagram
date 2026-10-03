@@ -1,5 +1,6 @@
 import { createSign } from "node:crypto";
 
+import { redactLogText } from "~/server/log";
 const GITHUB_API_VERSION = "2022-11-28";
 const GITHUB_APP_JWT_LIFETIME_SECONDS = 9 * 60;
 const GITHUB_APP_TOKEN_REFRESH_BUFFER_MS = 60_000;
@@ -124,7 +125,7 @@ async function requestGitHubAppInstallationToken() {
       JSON.stringify({
         event: "github_auth.installation_token_failed",
         status: response.status,
-        body: (await response.text()).slice(0, 500),
+        body: redactLogText(await response.text()),
       }),
     );
     throw new Error(

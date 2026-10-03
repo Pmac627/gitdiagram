@@ -120,7 +120,6 @@ export async function getCachedBrowsePage(
   if (
     !normalizedQuery.q &&
     normalizedQuery.sort === "recent_desc" &&
-    normalizedQuery.minStars === 0 &&
     requestedStart < RECENT_BROWSE_INDEX_SIZE
   ) {
     const recentIndex = await getCachedRecentBrowseIndex();

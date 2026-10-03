@@ -18,7 +18,6 @@ import {
   untilAborted,
   type RenderFormat,
 } from "./ffmpeg";
-import { deploymentHeaders } from "./render-origin";
 
 // An MP4 is rendered as ~5 s segments by parallel calls to the segment route,
 // then joined. Those calls are server to server: each carries an HMAC of its
@@ -30,10 +29,6 @@ import { deploymentHeaders } from "./render-origin";
 // frame-by-frame progress: the segments run in parallel and all finish at about
 // the same moment, so counting finished segments alone left the bar at 0% for
 // the whole render.
-//
-// Every call goes to the deployment that started the render (see
-// render-origin.ts), so a deploy mid-render cannot mix two engines in one
-// film or store it under the wrong engine version.
 
 export const segmentJobSchema = z.strictObject({
   username: githubUsernameSchema,
@@ -148,7 +143,6 @@ function postJob(
   return fetch(`${origin}/api/video/render/segment`, {
     method: "POST",
     headers: {
-      ...deploymentHeaders(),
       "Content-Type": "application/json",
       "X-Video-Segment": sign(job),
     },

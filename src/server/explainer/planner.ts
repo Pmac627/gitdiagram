@@ -1,7 +1,6 @@
 import "server-only";
 
 import { readIntEnv } from "~/server/env";
-import { errorText, logEvent } from "~/server/log";
 import type { Effort, Planner } from "./director";
 
 // Which model makes a video. Claude Opus tells the better story (see
@@ -10,12 +9,9 @@ import type { Effort, Planner } from "./director";
 // experiments/video-bespoke). Premium films go where the most people will
 // watch:
 // - the operator's videos,
-// - popular repositories, whoever asks (VIDEO_PREMIUM_MIN_STARS),
-// - a priority visitor's first video of the day (takePremiumVideo).
+// - popular repositories (VIDEO_PREMIUM_MIN_STARS).
 // They are made the same way unless VIDEO_PREMIUM_OPUS_DESIGNS=1, which has
-// Opus design them too. A visitor let in from a limited country
-// (features/admin/limited-countries.ts) always gets the standard planner, even
-// for a popular repository.
+// Opus design them too.
 
 /** GPT models run on OpenAI; every other model on the Claude API. */
 export const isOpenAIModel = (model: string) => /^gpt-/i.test(model);
@@ -88,31 +84,14 @@ export function plannerModels(): string[] {
 
 export interface PlannerChoice {
   planner: Planner;
-  /** Gives back the visitor's premium video if the run fails for free. */
-  refund?: () => Promise<void>;
 }
 
 export async function choosePlanner(params: {
   operator: boolean;
   stars: number;
-  priority: boolean;
-  /** Never the premium planner (a visitor from a limited country). */
-  standardOnly?: boolean;
-  takePremium: () => Promise<{ refund: () => Promise<void> } | null>;
 }): Promise<PlannerChoice> {
   if (params.operator) return { planner: premiumPlanner() };
-  if (params.standardOnly) return { planner: standardPlanner() };
   if (params.stars >= readIntEnv("VIDEO_PREMIUM_MIN_STARS", 10_000))
     return { planner: premiumPlanner() };
-  if (params.priority) {
-    // Without Redis the visitor gets the standard model, never a free premium one.
-    const taken = await params.takePremium().catch((error: unknown) => {
-      logEvent("error", "video.premium.take_failed", {
-        error: errorText(error),
-      });
-      return null;
-    });
-    if (taken) return { planner: premiumPlanner(), refund: taken.refund };
-  }
   return { planner: standardPlanner() };
 }

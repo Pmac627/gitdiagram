@@ -20,6 +20,7 @@ import {
 } from "./repo-page-cache";
 import type { ArtifactVisibility } from "./types";
 
+import { redactLogText } from "~/server/log";
 export interface SuccessfulDiagramState {
   stargazerCount: number | null;
   explanation: string;
@@ -90,7 +91,10 @@ export async function persistGenerationResult(params: {
               JSON.stringify({
                 event: "generate.persistence.failure_summary_cleanup_failed",
                 session_id: params.audit.sessionId,
-                error: error instanceof Error ? error.message : "Unknown error",
+                error: redactLogText(
+                  error instanceof Error ? error.message : "Unknown error",
+                  [params.githubPat],
+                ),
               }),
             );
           }
@@ -113,7 +117,10 @@ export async function persistGenerationResult(params: {
               JSON.stringify({
                 event: "generate.persistence.preview_write_failed",
                 session_id: params.audit.sessionId,
-                error: error instanceof Error ? error.message : "Unknown error",
+                error: redactLogText(
+                  error instanceof Error ? error.message : "Unknown error",
+                  [params.githubPat],
+                ),
               }),
             );
           }
@@ -174,10 +181,12 @@ export async function persistGenerationResult(params: {
             ? "generate.persistence.diagram_failed"
             : "generate.persistence.audit_failed",
         session_id: params.audit.sessionId,
-        error:
+        error: redactLogText(
           persistenceError instanceof Error
             ? persistenceError.message
             : "Unknown error",
+          [params.githubPat],
+        ),
       }),
     );
     if (params.successfulDiagramState && params.audit.status === "succeeded") {

@@ -72,3 +72,6 @@ venv
 
 # local explainer video artifacts (development)
 .video-cache/
+
+# IIS packages built by scripts/package-iis.ps1
+/artifacts/

@@ -4,10 +4,7 @@ import { GeistSans } from "geist/font/sans";
 import { type Metadata } from "next";
 import { Header } from "~/components/header";
 import { Footer } from "~/components/footer";
-import { LivePresence } from "~/components/live-presence";
-import { CSPostHogProvider } from "./providers";
-import { SponsorCampaignProvider } from "~/hooks/use-sponsor-campaign";
-import { activeSponsorCampaign } from "~/lib/sponsor-campaign";
+import { AppProviders } from "./providers";
 import { SITE_URL } from "~/lib/site";
 
 export const metadata: Metadata = {
@@ -33,15 +30,8 @@ export const metadata: Metadata = {
     "software development",
     "open source",
     "open source software",
-    "ahmedkhaleel2004",
-    "ahmed khaleel",
     "gitdiagram",
-    "gitdiagram.com",
   ],
-  authors: [
-    { name: "Ahmed Khaleel", url: "https://github.com/ahmedkhaleel2004" },
-  ],
-  creator: "Ahmed Khaleel",
   openGraph: {
     type: "website",
     locale: "en_US",
@@ -56,18 +46,10 @@ export const metadata: Metadata = {
     title: "GitDiagram - Repository to Diagram in Seconds",
     description:
       "Turn any GitHub repository into an interactive diagram for visualization.",
-    creator: "@ahmedkhaleel2004",
   },
   robots: {
-    index: true,
-    follow: true,
-    googleBot: {
-      index: true,
-      follow: true,
-      "max-image-preview": "large",
-      "max-video-preview": -1,
-      "max-snippet": -1,
-    },
+    index: false,
+    follow: false,
   },
 };
 
@@ -81,16 +63,11 @@ export default function RootLayout({
       className={`${GeistSans.variable}`}
     >
       <body className="flex min-h-screen flex-col">
-        <CSPostHogProvider>
-          <SponsorCampaignProvider
-            campaignId={activeSponsorCampaign()?.id ?? null}
-          >
-            <Header />
-            <div className="flex-grow">{children}</div>
-            <Footer />
-          </SponsorCampaignProvider>
-          <LivePresence />
-        </CSPostHogProvider>
+        <AppProviders>
+          <Header />
+          <div className="flex-grow">{children}</div>
+          <Footer />
+        </AppProviders>
       </body>
     </html>
   );

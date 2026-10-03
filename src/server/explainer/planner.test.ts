@@ -24,63 +24,42 @@ function choose(overrides: Partial<Parameters<typeof choosePlanner>[0]> = {}) {
   return choosePlanner({
     operator: false,
     stars: 100,
-    priority: false,
-    takePremium: vi.fn(async () => ({ refund: vi.fn(async () => undefined) })),
     ...overrides,
   });
 }
 
 describe("choosing the video planner", () => {
-  it("gives everyone else the Opus-and-Sol planner without touching the premium count", async () => {
-    const takePremium = vi.fn();
-    const choice = await choose({ takePremium });
+  it("gives everyone else the Opus-and-Sol planner", async () => {
+    const choice = await choose();
     expect(choice.planner).toEqual(STANDARD);
-    expect(takePremium).not.toHaveBeenCalled();
-  });
-
-  it("gives a priority visitor Opus while their premium video lasts", async () => {
-    const first = await choose({ priority: true });
-    expect(first.planner).toEqual(PREMIUM);
-    expect(first.refund).toBeTypeOf("function");
-    const later = await choose({
-      priority: true,
-      takePremium: vi.fn(async () => null),
-    });
-    expect(later.planner).toEqual(STANDARD);
+    expect(choice).not.toHaveProperty("refund");
   });
 
   it("makes popular repositories and the operator's videos with Opus", async () => {
-    const takePremium = vi.fn();
-    expect((await choose({ stars: 10_000, takePremium })).planner).toEqual(
-      PREMIUM,
-    );
-    expect((await choose({ operator: true, takePremium })).planner).toEqual(
-      PREMIUM,
-    );
-    expect(takePremium).not.toHaveBeenCalled();
+    expect((await choose({ stars: 10_000 })).planner).toEqual(PREMIUM);
+    expect((await choose({ operator: true })).planner).toEqual(PREMIUM);
   });
 
-  it("never gives a visitor from a limited country Opus alone", async () => {
-    const takePremium = vi.fn();
-    const choice = await choose({
-      stars: 50_000,
+  it("uses the star threshold from VIDEO_PREMIUM_MIN_STARS", async () => {
+    vi.stubEnv("VIDEO_PREMIUM_MIN_STARS", "500");
+    expect((await choose({ stars: 499 })).planner).toEqual(STANDARD);
+    expect((await choose({ stars: 500 })).planner).toEqual(PREMIUM);
+  });
+
+  it("has no priority-visitor premium path: a stale priority flag changes nothing", async () => {
+    const takePremium = vi.fn(async () => ({
+      refund: vi.fn(async () => undefined),
+    }));
+    const choice = await choosePlanner({
+      operator: false,
+      stars: 100,
       priority: true,
-      standardOnly: true,
       takePremium,
-    });
-    expect(choice.planner).toEqual(STANDARD);
-    expect(takePremium).not.toHaveBeenCalled();
-  });
+    } as never);
 
-  it("falls back to the standard planner when the premium count cannot be read", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const choice = await choose({
-      priority: true,
-      takePremium: vi.fn(async () => {
-        throw new Error("redis down");
-      }),
-    });
     expect(choice.planner).toEqual(STANDARD);
+    expect(choice).not.toHaveProperty("refund");
+    expect(takePremium).not.toHaveBeenCalled();
   });
 
   it("lets Sol write the standard script too when configured", async () => {

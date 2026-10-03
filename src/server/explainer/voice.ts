@@ -2,8 +2,9 @@ import "server-only";
 
 import OpenAI, { toFile } from "openai";
 import { runProcess } from "~/server/child-process";
-import { logEvent } from "~/server/log";
-import { upstashCommand } from "~/server/storage/upstash";
+import { logEvent, redactLogText } from "~/server/log";
+import { getDb } from "~/server/storage/db";
+import { kvRead, kvWrite } from "~/server/storage/kv";
 import { alignTake, type TimedWord } from "./voice-alignment";
 
 // The narrator: OpenRouter's text-to-speech with Gemini 3.8 Flash TTS and
@@ -44,19 +45,25 @@ export function isVoiceConfigured(): boolean {
 
 /** When paused new videos may start again (ms), or null when they may now. */
 export async function voicePausedUntil(): Promise<number | null> {
-  const until = Number(await upstashCommand<string | null>(["GET", PAUSE_KEY]));
+  const until = Number(kvRead(getDb(), PAUSE_KEY, Date.now()));
+
   return until > Date.now() ? until : null;
 }
 
 async function pauseVoice(ms: number, reason: string) {
-  const until = Date.now() + ms;
+  const now = Date.now();
+  const until = now + ms;
+
   logEvent("error", "video.voice.paused", {
     reason,
     until: new Date(until).toISOString(),
   });
-  await upstashCommand(["SET", PAUSE_KEY, String(until), "PX", ms]).catch(
-    () => undefined,
-  );
+
+  try {
+    kvWrite(getDb(), PAUSE_KEY, String(until), ms, now);
+  } catch {
+    // The pause is best effort; the next run that hits the same wall pauses again.
+  }
 }
 
 /** The OpenRouter balance left in USD, for /admin; null when unreadable. */
@@ -132,7 +139,7 @@ async function requestTake(
     }
     if (!response.ok)
       throw new Error(
-        `The voice failed (${response.status}): ${(await response.text()).slice(0, 200)}`,
+        `The voice failed (${response.status}): ${redactLogText(await response.text(), [], 200)}`,
       );
     const audio = Buffer.from(await response.arrayBuffer());
     if (!audio.length) throw new Error("The voice returned no audio.");

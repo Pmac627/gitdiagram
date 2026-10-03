@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("server-only", () => ({}));
 vi.mock("~/server/explainer/config", () => ({
   isVideoExplainerEnabled: () => true,
+  isVideoRenderEnabled: () => process.env.VIDEO_RENDER_ENABLED?.trim() === "1",
 }));
 vi.mock("~/server/explainer/render", () => ({
   renderVideoSegment: mocks.renderVideoSegment,
@@ -76,6 +77,7 @@ beforeEach(() => {
   process.env = {
     ...originalEnv,
     CACHE_KEY_SECRET: "secret",
+    VIDEO_RENDER_ENABLED: "1",
     VIDEO_SEGMENT_CONCURRENCY: "1",
   };
   mocks.readVideoArtifact.mockResolvedValue({
@@ -123,6 +125,57 @@ describe("POST /api/video/render/segment", () => {
     const third = await POST(request({ from: 25, to: 50 }));
     expect(third.status).toBe(200);
     await third.text();
+  });
+
+  it("allows one render at a time in production when the concurrency is not set", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    delete process.env.VIDEO_SEGMENT_CONCURRENCY;
+    const finishers: Array<() => void> = [];
+    mocks.renderVideoSegment.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishers.push(() => resolve(Buffer.from("mp4")));
+        }),
+    );
+    const first = await POST(request());
+    const second = await POST(request({ from: 25, to: 50 }));
+    try {
+      expect(second.status).toBe(503);
+      expect(second.headers.get("X-Video-Segment-Busy")).toBe("1");
+    } finally {
+      for (const finish of finishers) {
+        finish();
+      }
+      await first.text();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("answers 501 before any work when MP4 rendering is turned off", async () => {
+    delete process.env.VIDEO_RENDER_ENABLED;
+    const response = await POST(request());
+    expect(response.status).toBe(501);
+    expect(await response.json()).toEqual({
+      ok: false,
+      error: "MP4 rendering is turned off on this server.",
+    });
+    expect(mocks.readVideoArtifact).not.toHaveBeenCalled();
+    expect(mocks.renderVideoSegment).not.toHaveBeenCalled();
+    expect(mocks.storePoster).not.toHaveBeenCalled();
+  });
+
+  it("answers 501 for a poster job too, and for an unsigned request", async () => {
+    delete process.env.VIDEO_RENDER_ENABLED;
+    const poster = await POST(request({ format: "poster", from: 0, to: 1 }));
+    expect(poster.status).toBe(501);
+    const unsigned = await POST(
+      new Request("https://gitdiagram.com/api/video/render/segment", {
+        method: "POST",
+        body: "{}",
+      }),
+    );
+    expect(unsigned.status).toBe(501);
+    expect(mocks.storePoster).not.toHaveBeenCalled();
   });
 
   it("refuses a stale version without holding a slot", async () => {

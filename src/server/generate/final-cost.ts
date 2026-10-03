@@ -4,6 +4,7 @@ import type {
   GenerationStageUsage,
 } from "~/features/diagram/cost";
 import type { GenerationEstimateResult } from "./cost-estimate";
+import type { AIProvider } from "./model-config";
 import {
   EXPLANATION_ESTIMATED_OUTPUT_TOKENS,
   GRAPH_ESTIMATED_OUTPUT_TOKENS,
@@ -15,8 +16,10 @@ import {
   sumGenerationUsage,
 } from "./pricing";
 
+/** Keep the final token total and any unavailable price. @see docs/flows/diagram-generation.md */
 export function createFinalGenerationCostSummary(params: {
   model: string;
+  provider?: AIProvider;
   estimate: GenerationEstimateResult;
   actualUsages: GenerationTokenUsage[];
   stageUsages?: GenerationStageUsage[];
@@ -35,6 +38,7 @@ export function createFinalGenerationCostSummary(params: {
     return createCostSummary({
       kind: "actual",
       model: params.model,
+      provider: params.provider,
       usage: sumGenerationUsage(...params.actualUsages),
       approximate: false,
     });
@@ -72,6 +76,7 @@ export function createFinalGenerationCostSummary(params: {
       createCostSummary({
         kind: "estimate",
         model: params.model,
+        provider: params.provider,
         usage: retryUsage,
         approximate: true,
       }),

@@ -205,7 +205,7 @@ export function useBrowseHoverPreview({
         const response = await fetch(
           `/api/diagram-preview?username=${encodeURIComponent(username)}&repo=${encodeURIComponent(repo)}&lastSuccessfulAt=${encodeURIComponent(lastSuccessfulAt)}`,
           {
-            credentials: "omit",
+            credentials: "same-origin",
             method: "GET",
             signal: controller.signal,
           },

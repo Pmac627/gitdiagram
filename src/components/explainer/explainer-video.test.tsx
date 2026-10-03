@@ -35,7 +35,11 @@ vi.mock("./explainer-player", () => ({
     <div data-testid="player">{artifact.createdAt}</div>
   ),
 }));
-vi.mock("./explainer-share", () => ({ ExplainerShare: () => null }));
+vi.mock("./explainer-share", () => ({
+  ExplainerShare: ({ renderEnabled }: { renderEnabled?: boolean }) => (
+    <div data-testid="share" data-render-enabled={String(renderEnabled)} />
+  ),
+}));
 
 const video = (createdAt: string) =>
   ({
@@ -53,7 +57,6 @@ beforeEach(() => {
     video: video("2026-09-24T00:00:00.000Z"),
     canGenerate: false,
     paused: null,
-    anyDevice: false,
   });
   api.streamExplainerVideo.mockResolvedValue(undefined);
   vi.stubGlobal(
@@ -69,10 +72,34 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+/** The fifth argument streamExplainerVideo was called with: `{ regenerate }`. */
+function optionsOfCall(call = 0) {
+  return api.streamExplainerVideo.mock.calls[call]![4] as
+    { regenerate?: boolean } | undefined;
+}
+
 async function showVideo() {
   render(<ExplainerVideo username="acme" repo="tiny" />);
   await screen.findByTestId("player");
 }
+
+describe("ExplainerVideo share options", () => {
+  it("passes renderEnabled from the lookup to the share row", async () => {
+    api.fetchExplainerVideo.mockResolvedValue({
+      video: video("2026-09-24T00:00:00.000Z"),
+      canGenerate: false,
+      paused: null,
+      renderEnabled: true,
+    });
+    await showVideo();
+    expect(screen.getByTestId("share").dataset.renderEnabled).toBe("true");
+  });
+
+  it("passes false when the lookup says rendering is off or says nothing", async () => {
+    await showVideo();
+    expect(screen.getByTestId("share").dataset.renderEnabled).toBe("false");
+  });
+});
 
 describe("ExplainerVideo regenerate", () => {
   it("stays hidden until admin controls are turned on", async () => {
@@ -110,14 +137,69 @@ describe("ExplainerVideo regenerate", () => {
     expect(api.streamExplainerVideo).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
 
-    expect(api.streamExplainerVideo).toHaveBeenCalledWith(
+    expect(api.streamExplainerVideo).toHaveBeenCalledTimes(1);
+    expect(api.streamExplainerVideo.mock.calls[0]!.slice(0, 3)).toEqual([
       "acme",
       "tiny",
       expect.any(Function),
-    );
+    ]);
+    // Only the confirmed action carries the flag that replaces the video.
+    expect(optionsOfCall()).toEqual({ regenerate: true });
     expect((await screen.findByTestId("player")).textContent).toBe(
       "2026-09-25T00:00:00.000Z",
     );
+  });
+
+  it("opens a confirm step that names what will happen, and sends nothing yet", async () => {
+    act(() => setAdminTools(true));
+    await showVideo();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Regenerate video" }),
+    );
+
+    expect(screen.getByText(/Replace this video for everyone\?/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Regenerate" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+    expect(api.streamExplainerVideo).not.toHaveBeenCalled();
+  });
+
+  it("sends nothing when the confirmation is cancelled, and offers the action again", async () => {
+    act(() => setAdminTools(true));
+    await showVideo();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Regenerate video" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(api.streamExplainerVideo).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Regenerate" })).toBe(null);
+    expect(
+      screen.getByRole("button", { name: "Regenerate video" }),
+    ).toBeTruthy();
+    expect(screen.getByTestId("player").textContent).toBe(
+      "2026-09-24T00:00:00.000Z",
+    );
+  });
+
+  it("keeps the flag when a failed regeneration is tried again", async () => {
+    api.streamExplainerVideo.mockImplementation(
+      async (_user, _repo, onEvent: (event: unknown) => void) =>
+        onEvent({ status: "error", error: "It broke.", retryable: true }),
+    );
+    act(() => setAdminTools(true));
+    await showVideo();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Regenerate video" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
+    await screen.findByText("It broke.");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(api.streamExplainerVideo).toHaveBeenCalledTimes(2);
+    expect(optionsOfCall(1)).toEqual({ regenerate: true });
   });
 
   it("keeps the current video one click away when regenerating fails", async () => {
@@ -146,9 +228,23 @@ const empty = {
   video: null,
   canGenerate: true,
   paused: null,
-  anyDevice: true,
   generating: false,
 };
+
+describe("ExplainerVideo first video", () => {
+  it("makes a first video without the regenerate flag", async () => {
+    api.fetchExplainerVideo.mockResolvedValue(empty);
+    api.streamExplainerVideo.mockResolvedValue(undefined);
+    render(<ExplainerVideo username="acme" repo="fresh" />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Make the video" }),
+    );
+
+    expect(api.streamExplainerVideo).toHaveBeenCalledTimes(1);
+    expect(optionsOfCall()?.regenerate).not.toBe(true);
+  });
+});
 
 describe("ExplainerVideo generation", () => {
   it("keeps making the video while the panel is closed, and shows it on reopening", async () => {
@@ -322,7 +418,6 @@ describe("ExplainerVideo cost", () => {
       },
       canGenerate: false,
       paused: null,
-      anyDevice: false,
     });
 
   it("counts the narration in what a video cost", async () => {

@@ -1,45 +1,29 @@
-import { randomUUID } from "node:crypto";
 import { after } from "next/server";
 import { z } from "zod";
+import { requireOperator } from "~/server/auth/require-operator";
 
 import {
   githubRepoSchema,
   githubUsernameSchema,
 } from "~/server/generate/types";
-import { getClientIp } from "~/server/http/client-ip";
 import {
   jsonErrorResponse,
   NO_STORE_RESPONSE_HEADERS,
   parseSameOriginJsonRequest,
 } from "~/server/http/same-origin-json";
-import { readAdmissionControls } from "~/server/admin/controls";
-import { emitLiveEvent, requestOrigin } from "~/server/admin/live-events";
-import {
-  audienceBlock,
-  audienceMessage,
-  isInVideoRegion,
-  limitedCountryRule,
-} from "~/server/explainer/audience";
 import { refreshVideoPages } from "~/server/explainer/cache";
 import {
   canGenerateVideos,
   isVideoExplainerEnabled,
+  isVideoRenderEnabled,
 } from "~/server/explainer/config";
 import { VideoRefusalError } from "~/server/explainer/director";
-import { reportHeldBack } from "~/server/explainer/gate-notice";
 import { generateExplainerVideo } from "~/server/explainer/generate";
 import {
-  attemptLimitMessage,
   generationLockName,
-  isTrustedVideoCaller,
-  limitMessage,
   pausedMessage,
-  reserveVideoSlot,
-  takePremiumVideo,
-  takeVideoAttempt,
   tryPaidVideoRun,
   tryVideoLock,
-  type Reservation,
 } from "~/server/explainer/limits";
 import { isNarrationAvailable } from "~/server/explainer/narration";
 import { choosePlanner } from "~/server/explainer/planner";
@@ -47,12 +31,11 @@ import { VideoInputError } from "~/server/explainer/repository";
 import { remakePosterRemotely } from "~/server/explainer/segments";
 import { readVideoArtifact } from "~/server/explainer/store";
 import { VoiceUnavailableError } from "~/server/explainer/voice";
-import {
-  readVisitor,
-  withVisitorCookie,
-  type Visitor,
-} from "~/server/explainer/visitor";
 import { errorText, logEvent } from "~/server/log";
+import {
+  isWindowsDeviceName,
+  toStorageSegment,
+} from "~/server/storage/fs-safety";
 import type {
   VideoArtifact,
   VideoGenerationEvent,
@@ -77,6 +60,9 @@ const MIN_POSTER_MS = 20_000;
 const requestSchema = z.strictObject({
   username: githubUsernameSchema,
   repo: githubRepoSchema,
+  // Replacing a stored video is explicit. Without this flag an existing video
+  // answers 409 "exists".
+  regenerate: z.boolean().optional(),
 });
 
 const UNAVAILABLE_MESSAGE =
@@ -89,18 +75,10 @@ const NARRATOR_MESSAGE =
 /** The cap on paid runs at once was reached just before the first model call. */
 class PaidRunsBusyError extends Error {}
 
-/**
- * What the viewer is told when a run fails, and whether trying again could
- * help. Once paid work started, a failure keeps the visitor's daily place,
- * so for most people another try the same day would only meet their limit.
- */
+/** What the viewer is told when a run fails. Only a refusal or bad input is final. */
 function failureEvent(
   error: unknown,
-  {
-    timedOut,
-    paid,
-    trusted,
-  }: { timedOut: boolean; paid: boolean; trusted: boolean },
+  { timedOut }: { timedOut: boolean },
 ): Extract<VideoGenerationEvent, { status: "error" }> {
   if (error instanceof VideoInputError)
     return { status: "error", error: error.message, retryable: false };
@@ -117,22 +95,13 @@ function failureEvent(
   const failed = timedOut
     ? "The explainer video took too long to make."
     : "The explainer video could not be generated.";
-  return !paid || trusted
-    ? { status: "error", error: `${failed} Try again.`, retryable: true }
-    : {
-        status: "error",
-        error: `${failed} This try counted toward today's free videos.`,
-        retryable: false,
-      };
+  return { status: "error", error: `${failed} Try again.`, retryable: true };
 }
 
-/** Every response names the visitor, so their next request counts as them. */
 export async function POST(request: Request): Promise<Response> {
-  const visitor = readVisitor(request);
-  return withVisitorCookie(await generate(request, visitor), visitor);
-}
+  const denied = await requireOperator(request);
+  if (denied) return denied;
 
-async function generate(request: Request, visitor: Visitor): Promise<Response> {
   const requestStartedAt = Date.now();
   if (!isVideoExplainerEnabled())
     return jsonErrorResponse("Explainer videos are not enabled.", 404);
@@ -144,57 +113,24 @@ async function generate(request: Request, visitor: Visitor): Promise<Response> {
   if (!parsed.success) return parsed.response;
   if (!canGenerateVideos())
     return jsonErrorResponse("Explainer videos are not available.", 503);
-  const { username, repo } = parsed.data;
+  const { username, repo, regenerate = false } = parsed.data;
   const repository = `${username}/${repo}`;
-  // Only the operator (or anyone, locally) skips the limits, and only they may
-  // replace a video: once made, a video is everyone's.
-  const trusted = await isTrustedVideoCaller(request);
-  const production = process.env.NODE_ENV === "production";
-  const clientIp = getClientIp(request);
-  const requester = { visitorId: visitor.id, clientIp };
-  const gated = (reason: string) =>
-    reportHeldBack(request, { username, repo, reason, step: "start" });
-  // Someone in a priority place may make more videos a day, and their first
-  // is made with the premium model (see planner.ts).
-  let priority = false;
-  // Someone let in from a limited country makes at most one video a day, with
-  // the standard models (see features/admin/limited-countries.ts).
-  let limited = false;
-  if (!trusted) {
-    // The page's first request (GET /api/video) names the browser. Without
-    // that name the per-person budget cannot count this caller.
-    if (visitor.fresh)
-      return jsonErrorResponse("Reload the page and try again.", 400);
-    // The operator sets who may start new videos, and can pause them, live
-    // from /admin. By default anyone in a few places may. Unreadable
-    // controls stop new videos rather than skip a pause.
-    let controls;
-    try {
-      controls = await readAdmissionControls();
-    } catch {
-      return jsonErrorResponse(UNAVAILABLE_MESSAGE, 503);
-    }
-    if (controls.videosPaused) {
-      gated("paused");
-      return jsonErrorResponse(pausedMessage("paused"), 503);
-    }
-    const blocked = audienceBlock(
-      request,
-      controls.videoAudience,
-      controls.priorityPlaces,
+  // Fail fast: a name the video store cannot keep as a folder (a Windows
+  // device name such as "con" or "aux.js", say) would only fail after the
+  // paid model and voice work.
+  if (isWindowsDeviceName(username) || isWindowsDeviceName(repo)) {
+    return jsonErrorResponse(
+      "This repository name is reserved on Windows, so its video cannot be stored on this server.",
+      400,
     );
-    if (blocked) {
-      gated(blocked);
-      return jsonErrorResponse(audienceMessage(blocked), 403);
-    }
-    const country = limitedCountryRule(request, controls, getClientIp(request));
-    if (country === "blocked") {
-      gated("country");
-      return jsonErrorResponse(audienceMessage("place"), 403);
-    }
-    limited = country === "limited";
-    priority = isInVideoRegion(request, controls.priorityPlaces);
   }
+  if (!toStorageSegment(username) || !toStorageSegment(repo)) {
+    return jsonErrorResponse(
+      "This repository name cannot be stored on this server.",
+      400,
+    );
+  }
+  const production = process.env.NODE_ENV === "production";
 
   // `reason` lets the panel show the video (or wait for it) instead of an error.
   const alreadyMade = () =>
@@ -206,35 +142,27 @@ async function generate(request: Request, visitor: Visitor): Promise<Response> {
       },
       { status: 409, headers: NO_STORE_RESPONSE_HEADERS },
     );
-  let reservation: Reservation | null = null;
   let releaseLock: (() => Promise<void>) | null = null;
   let releaseRun: (() => Promise<void>) | null = null;
   const release = async () => {
     await releaseRun?.();
     await releaseLock?.();
   };
-  // Hands back what admission took when no run starts after all.
+  // Lets go of what admission took when no run starts after all.
   const turnAway = async (response: Response) => {
-    if (reservation?.ok) await reservation.refund();
     await release();
     return response;
   };
   try {
-    if (!trusted && (await readVideoArtifact(username, repo)))
+    // Every caller here is the operator, so the checks that protect paid work
+    // apply to all of them: an existing video is replaced only on request, and
+    // nothing starts while the narrator cannot be paid for.
+    if (!regenerate && (await readVideoArtifact(username, repo))) {
       return alreadyMade();
-    if (!trusted) {
-      if (!(await isNarrationAvailable())) {
-        gated("voice");
-        return jsonErrorResponse(pausedMessage("voice"), 503);
-      }
-      reservation = await reserveVideoSlot(requester, { priority, limited });
-      if (!reservation.ok) {
-        gated(reservation.reason);
-        return jsonErrorResponse(
-          limitMessage(reservation.reason, reservation.limit),
-          429,
-        );
-      }
+    }
+
+    if (!(await isNarrationAvailable())) {
+      return jsonErrorResponse(pausedMessage("voice"), 503);
     }
     if (production) {
       releaseLock = await tryVideoLock(
@@ -255,45 +183,23 @@ async function generate(request: Request, visitor: Visitor): Promise<Response> {
         );
       // Checked again under the lock: a run that finished between the first
       // check and taking the lock has stored its video by now.
-      if (!trusted && (await readVideoArtifact(username, repo)))
+      if (!regenerate && (await readVideoArtifact(username, repo))) {
         return await turnAway(alreadyMade());
-    }
-    if (!trusted) {
-      // The run reads the repository from GitHub next. That read is counted
-      // per connection and never refunded, so failing runs cannot repeat it
-      // without end (see takeVideoAttempt).
-      const attempt = await takeVideoAttempt(clientIp);
-      if (!attempt.ok) {
-        gated("attempts");
-        return await turnAway(
-          jsonErrorResponse(
-            attemptLimitMessage(attempt.retryAfterSeconds),
-            429,
-          ),
-        );
       }
     }
   } catch (error) {
-    // Redis and storage hold the budget and the videos, so without them
+    // SQLite and the disk hold the locks and the videos, so without them
     // nothing new is started.
     logEvent("error", "video.admission_failed", { error: errorText(error) });
     return turnAway(jsonErrorResponse(UNAVAILABLE_MESSAGE, 503));
   }
 
   const siteOrigin = new URL(request.url).origin;
-  const origin = requestOrigin(request);
   const encoder = new TextEncoder();
-  const startedAt = Date.now();
-  // The job id stays free of the repository's name, which may be private.
-  const jobId = `video:${startedAt}:${randomUUID().slice(0, 8)}`;
   const deadline = AbortSignal.timeout(VIDEO_DEADLINE_MS);
   let stored: VideoArtifact | null = null;
-  // Reading the repository proved it public, so the feed may name it.
-  let confirmedPublic = false;
   // A model has been called: from here on the run costs real money.
   let paid = false;
-  // The visitor's premium video for today, if this run took it.
-  let refundPremium: (() => Promise<void>) | undefined;
   let closed = false;
   let job: Promise<void> = Promise.resolve();
 
@@ -316,17 +222,6 @@ async function generate(request: Request, visitor: Visitor): Promise<Response> {
         }
       };
       const onEvent = (event: VideoGenerationEvent) => {
-        if (!confirmedPublic && event.status === "planning") {
-          confirmedPublic = true;
-          void emitLiveEvent({
-            kind: "video.started",
-            repo: repository,
-            operator: trusted,
-            job: { id: jobId, state: "start", label: repository },
-            model: event.progress?.model,
-            ...origin,
-          });
-        }
         send(event);
       };
       const heartbeat = setInterval(() => write(": keep-alive\n\n"), 15_000);
@@ -342,27 +237,17 @@ async function generate(request: Request, visitor: Visitor): Promise<Response> {
         onPaidWork: async () => {
           if (production) {
             releaseRun = await tryPaidVideoRun({
-              operator: trusted,
+              operator: true,
               ttlMs: RUN_TTL_MS,
             });
             if (!releaseRun) {
-              gated("busy");
               throw new PaidRunsBusyError("Too many paid runs at once.");
             }
           }
           paid = true;
         },
-        choosePlanner: async ({ stars }) => {
-          const choice = await choosePlanner({
-            operator: trusted,
-            stars,
-            priority,
-            standardOnly: limited,
-            takePremium: () => takePremiumVideo(requester),
-          });
-          refundPremium = choice.refund;
-          return choice.planner;
-        },
+        choosePlanner: async ({ stars }) =>
+          (await choosePlanner({ operator: true, stars })).planner,
         signal: deadline,
       })
         .then(
@@ -379,21 +264,7 @@ async function generate(request: Request, visitor: Visitor): Promise<Response> {
               timedOut: deadline.aborted,
               error: errorText(error, 300),
             });
-            send(
-              failureEvent(error, {
-                timedOut: deadline.aborted,
-                paid,
-                trusted,
-              }),
-            );
-            // Only a failure before any model call is refunded. After that the
-            // run was paid for, and a refund would let one failing repository
-            // be retried for free again and again. A narrator out of credit is
-            // the operator's doing, not the visitor's, so that is refunded too.
-            if (!paid || error instanceof VoiceUnavailableError) {
-              if (reservation?.ok) await reservation.refund();
-              await refundPremium?.();
-            }
+            send(failureEvent(error, { timedOut: deadline.aborted }));
           },
         )
         .catch((error: unknown) => {
@@ -407,13 +278,6 @@ async function generate(request: Request, visitor: Visitor): Promise<Response> {
           // Every part of the run has settled by now, so the next run of this
           // repository cannot overlap its paid work.
           await release();
-          await emitLiveEvent({
-            kind: "video.finished",
-            repo: confirmedPublic ? repository : "a repository",
-            outcome: stored ? "complete" : "error",
-            ms: Date.now() - startedAt,
-            ...(confirmedPublic ? { job: { id: jobId, state: "end" } } : {}),
-          });
         });
     },
     cancel() {
@@ -429,6 +293,10 @@ async function generate(request: Request, visitor: Visitor): Promise<Response> {
     if (!artifact) return;
     refreshVideoPages(username, repo);
     const left = FUNCTION_BUDGET_MS - (Date.now() - requestStartedAt);
+    if (!isVideoRenderEnabled()) {
+      logEvent("info", "video.poster.render_disabled", { repository });
+      return;
+    }
     if (left < MIN_POSTER_MS) {
       logEvent("warn", "video.poster.skipped", { repository, leftMs: left });
       return;
@@ -441,7 +309,7 @@ async function generate(request: Request, visitor: Visitor): Promise<Response> {
   return new Response(stream, {
     headers: {
       "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
+      "Cache-Control": "private, no-cache, no-transform",
       "X-Accel-Buffering": "no",
       "X-Content-Type-Options": "nosniff",
     },

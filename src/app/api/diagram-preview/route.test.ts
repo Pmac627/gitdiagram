@@ -3,6 +3,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import type * as NextServer from "next/server";
 
+vi.mock("server-only", () => ({}));
+
+import { registerOperatorSession } from "~/server/auth/test-session";
+
+const session = registerOperatorSession();
+
+function authenticatedRequest(url: string): NextRequest {
+  return new NextRequest(url, { headers: session.headers });
+}
+
 const mocks = vi.hoisted(() => ({
   after: vi.fn(),
   getPreview: vi.fn(),
@@ -41,7 +51,7 @@ describe("GET /api/diagram-preview", () => {
       lastSuccessfulAt: "2026-07-16T07:00:00.000Z",
       source: "artifact",
     });
-    const request = new NextRequest(
+    const request = authenticatedRequest(
       "https://gitdiagram.com/api/diagram-preview?username=acme&repo=demo&lastSuccessfulAt=2026-07-16T07%3A00%3A00.000Z",
     );
 
@@ -62,7 +72,7 @@ describe("GET /api/diagram-preview", () => {
 
   it("rejects a malformed repository identifier before reaching storage", async () => {
     const response = await GET(
-      new NextRequest(
+      authenticatedRequest(
         "https://gitdiagram.com/api/diagram-preview?username=not%20a%20user&repo=demo",
       ),
     );
@@ -73,7 +83,7 @@ describe("GET /api/diagram-preview", () => {
 
   it("bounds the timestamp so an oversized value cannot reach storage", async () => {
     const response = await GET(
-      new NextRequest(
+      authenticatedRequest(
         `https://gitdiagram.com/api/diagram-preview?username=acme&repo=demo&lastSuccessfulAt=${"9".repeat(500)}`,
       ),
     );
@@ -87,7 +97,7 @@ describe("GET /api/diagram-preview", () => {
     mocks.getPreview.mockRejectedValue(new Error("R2 unavailable"));
 
     const response = await GET(
-      new NextRequest(
+      authenticatedRequest(
         "https://gitdiagram.com/api/diagram-preview?username=acme&repo=demo",
       ),
     );
@@ -96,13 +106,33 @@ describe("GET /api/diagram-preview", () => {
     expect(response.headers.get("Cache-Control")).toBe("no-store");
   });
 
+  it("is never cached by a shared cache (private or no-store only)", async () => {
+    mocks.getPreview.mockResolvedValue({
+      diagram: "flowchart TD",
+      lastSuccessfulAt: "2026-07-16T07:00:00.000Z",
+      source: "sidecar",
+    });
+
+    const response = await GET(
+      authenticatedRequest(
+        "https://gitdiagram.com/api/diagram-preview?username=acme&repo=demo&lastSuccessfulAt=2026-07-16T07%3A00%3A00.000Z",
+      ),
+    );
+    const cacheControl = response.headers.get("cache-control") ?? "";
+
+    expect(response.status).toBe(200);
+    expect(cacheControl).not.toMatch(/\bpublic\b/);
+    expect(cacheControl).not.toContain("s-maxage");
+    expect(cacheControl).toMatch(/private|no-store/);
+  });
+
   it("does not rewrite a matching sidecar", async () => {
     mocks.getPreview.mockResolvedValue({
       diagram: "flowchart TD",
       lastSuccessfulAt: "2026-07-16T07:00:00.000Z",
       source: "sidecar",
     });
-    const request = new NextRequest(
+    const request = authenticatedRequest(
       "https://gitdiagram.com/api/diagram-preview?username=acme&repo=demo&lastSuccessfulAt=2026-07-16T07%3A00%3A00.000Z",
     );
 

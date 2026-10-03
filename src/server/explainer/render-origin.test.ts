@@ -2,11 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import {
-  deploymentHeaders,
-  internalOrigin,
-  pinToDeployment,
-} from "./render-origin";
+import * as renderOrigin from "./render-origin";
+
+const { internalOrigin } = renderOrigin;
 
 const originalEnv = { ...process.env };
 const request = (url: string) => new Request(url);
@@ -16,33 +14,43 @@ afterEach(() => {
 });
 
 describe("render self-calls", () => {
-  it("pin the stage and requests to the running deployment on Vercel", () => {
-    process.env.VERCEL_DEPLOYMENT_ID = "dpl_abc";
-    expect(
-      pinToDeployment("https://gitdiagram.com/video-engine/stage.html?v=18"),
-    ).toBe("https://gitdiagram.com/video-engine/stage.html?v=18&dpl=dpl_abc");
-    expect(deploymentHeaders()).toEqual({ "x-deployment-id": "dpl_abc" });
+  it("no longer offers deployment pinning", () => {
+    expect(Object.keys(renderOrigin)).not.toContain("deploymentHeaders");
+    expect(Object.keys(renderOrigin)).not.toContain("pinToDeployment");
   });
 
-  it("are left alone off Vercel", () => {
-    delete process.env.VERCEL_DEPLOYMENT_ID;
-    const url = "http://localhost:3000/video-engine/stage.html?v=18";
-    expect(pinToDeployment(url)).toBe(url);
-    expect(deploymentHeaders()).toEqual({});
-  });
-
-  it("use the public origin on Vercel, loopback in a container, or the override", () => {
+  it("uses loopback on the server's own port in production, even when VERCEL is set", () => {
     Object.assign(process.env, { NODE_ENV: "production", PORT: "8080" });
     delete process.env.VIDEO_INTERNAL_ORIGIN;
     process.env.VERCEL = "1";
-    expect(internalOrigin(request("https://gitdiagram.com/api/x"))).toBe(
-      "https://gitdiagram.com",
+    expect(internalOrigin(request("https://example.com/api/x"))).toBe(
+      "http://127.0.0.1:8080",
     );
     delete process.env.VERCEL;
     expect(internalOrigin(request("http://0.0.0.0:8080/api/x"))).toBe(
       "http://127.0.0.1:8080",
     );
-    process.env.VIDEO_INTERNAL_ORIGIN = "http://render.internal:9000/";
+  });
+
+  it("trims whitespace around PORT", () => {
+    Object.assign(process.env, { NODE_ENV: "production", PORT: " 8080 " });
+    delete process.env.VIDEO_INTERNAL_ORIGIN;
+    expect(internalOrigin(request("http://0.0.0.0:8080/api/x"))).toBe(
+      "http://127.0.0.1:8080",
+    );
+  });
+
+  it("falls back to the request's origin in production when PORT is empty", () => {
+    Object.assign(process.env, { NODE_ENV: "production", PORT: "   " });
+    delete process.env.VIDEO_INTERNAL_ORIGIN;
+    expect(internalOrigin(request("https://host.example/api/x"))).toBe(
+      "https://host.example",
+    );
+  });
+
+  it("lets VIDEO_INTERNAL_ORIGIN win, keeping only its origin", () => {
+    Object.assign(process.env, { NODE_ENV: "production", PORT: "8080" });
+    process.env.VIDEO_INTERNAL_ORIGIN = "http://render.internal:9000/path";
     expect(internalOrigin(request("http://0.0.0.0:8080/api/x"))).toBe(
       "http://render.internal:9000",
     );

@@ -40,7 +40,6 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title,
     description,
-    creator: "@ahmedkhaleel2004",
     images: [image("/twitter-image.png")],
   },
 };
@@ -76,7 +75,6 @@ async function firstPage(): Promise<VideoPage> {
       totalPages: 1,
       sort: "stars_desc",
       q: "",
-      minStars: 0,
     };
   }
 }

@@ -15,9 +15,16 @@ vi.mock("~/server/explainer/catalog", () => ({
 }));
 
 import { GET } from "./route";
+import { registerOperatorSession } from "~/server/auth/test-session";
+
+const session = registerOperatorSession();
 
 const get = (query: string) =>
-  GET(new Request(`https://gitdiagram.com/api/video/catalog${query}`));
+  GET(
+    new Request(`https://gitdiagram.com/api/video/catalog${query}`, {
+      headers: { ...session.headers },
+    }),
+  );
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -28,18 +35,30 @@ beforeEach(() => {
 describe("GET /api/video/catalog", () => {
   it("answers one page of the gallery for the query, cached briefly", async () => {
     mocks.getVideoPage.mockResolvedValue({ cards: [], total: 0, page: 2 });
-    const response = await get(
-      `?q=${"x".repeat(300)}&sort=stars_desc&minStars=100&page=2`,
-    );
+    const response = await get(`?q=${"x".repeat(300)}&sort=stars_desc&page=2`);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ cards: [], total: 0, page: 2 });
     expect(mocks.getVideoPage).toHaveBeenCalledWith({
       q: "x".repeat(100),
       sort: "stars_desc",
-      minStars: "100",
       page: "2",
     });
-    expect(response.headers.get("cache-control")).toContain("max-age=60");
+    const cacheControl = response.headers.get("cache-control")!;
+    expect(cacheControl).toContain("private");
+    expect(cacheControl).toContain("max-age=60");
+    expect(cacheControl).not.toMatch(/\bpublic\b/);
+    expect(cacheControl).not.toContain("s-maxage");
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.get("vercel-cdn-cache-control")).toBeNull();
+  });
+
+  it("ignores a legacy minStars parameter and does not pass it on", async () => {
+    mocks.getVideoPage.mockResolvedValue({ cards: [], total: 0, page: 1 });
+    const response = await get("?minStars=1000");
+    expect(response.status).toBe(200);
+    expect(mocks.getVideoPage).toHaveBeenCalledWith(
+      expect.not.objectContaining({ minStars: expect.anything() }),
+    );
   });
 
   it("fails without caching when the videos cannot be listed", async () => {

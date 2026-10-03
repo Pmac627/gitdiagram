@@ -14,7 +14,7 @@ import {
   getJsonObject,
   putJsonObject,
   R2_REQUEST_TIMEOUT_MS,
-} from "~/server/storage/r2";
+} from "~/server/storage/object-store";
 import { withDistributedLock } from "~/server/storage/distributed-lock";
 import type {
   ArtifactVisibility,
@@ -40,11 +40,7 @@ export function toStoredSessionSummary(
     analysisModel: audit.analysisModel,
     sourcePaths: audit.sourcePaths,
     unavailableSourceCount: audit.unavailableSourceCount,
-    quotaStatus: audit.quotaStatus,
-    quotaBucket: audit.quotaBucket,
-    quotaDateUtc: audit.quotaDateUtc,
-    actualCommittedTokens: audit.actualCommittedTokens,
-    quotaResetAt: audit.quotaResetAt,
+    redactedSecretCount: audit.redactedSecretCount,
     estimatedCost: audit.estimatedCost,
     finalCost: audit.finalCost,
     // Successful artifacts already carry the canonical graph at the top level.

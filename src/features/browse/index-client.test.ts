@@ -14,7 +14,6 @@ const result: BrowsePageResult = {
   totalPages: 1,
   sort: "recent_desc",
   q: "vercel",
-  minStars: 0,
 };
 
 describe("browse page client cache", () => {
@@ -41,7 +40,7 @@ describe("browse page client cache", () => {
     await expect(loadBrowsePage({ q: "vercel" })).resolves.toEqual(result);
     expect(fetchSpy).toHaveBeenCalledOnce();
     expect(fetchSpy.mock.calls[0]?.[1]).toEqual({
-      credentials: "omit",
+      credentials: "same-origin",
       signal: expect.any(AbortSignal),
     });
   });

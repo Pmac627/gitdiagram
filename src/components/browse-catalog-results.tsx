@@ -20,7 +20,6 @@ import {
   type HoverPreviewState,
   type HoverPreviewStatus,
 } from "~/components/browse-catalog-shared";
-import { SponsorCatalogRow } from "~/components/sponsor-slot";
 import { useHydrated } from "~/hooks/use-hydrated";
 
 interface BrowseCatalogResultsProps {
@@ -105,7 +104,7 @@ export function BrowseCatalogResults({
             </tr>
           </thead>
           <tbody className="block lg:table-row-group">
-            {result.items.flatMap((item, index) => {
+            {result.items.map((item) => {
               const diagramPath = `/${encodeURIComponent(item.username)}/${encodeURIComponent(item.repo)}`;
               const githubPath = `https://github.com/${item.username}/${item.repo}`;
 
@@ -171,11 +170,7 @@ export function BrowseCatalogResults({
                   </td>
                 </tr>
               );
-              // Its own stable key keeps the ad row mounted while searches,
-              // filters, sorting and paging replace the listings around it.
-              return index === 1
-                ? [<SponsorCatalogRow key="sponsor" />, row]
-                : [row];
+              return row;
             })}
           </tbody>
         </table>

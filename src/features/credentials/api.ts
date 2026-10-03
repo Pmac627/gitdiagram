@@ -1,13 +1,26 @@
+import { AI_PROVIDERS, type AIProvider } from "~/server/generate/model-config";
+
+export type { AIProvider };
 export type CredentialKind = "openai_api_key" | "github_pat";
 
 export interface CredentialStatus {
   openaiApiKeyConfigured: boolean;
   githubPatConfigured: boolean;
+  /** The provider the server is configured for now. */
+  configuredProvider: AIProvider;
+  /** The provider the stored API key was saved for, or null when none. */
+  apiKeyProvider: AIProvider | null;
 }
 
 type CredentialAction =
   | { action: "status" }
-  | { action: "set"; credential: CredentialKind; value: string }
+  | {
+      action: "set";
+      credential: "openai_api_key";
+      value: string;
+      provider: AIProvider;
+    }
+  | { action: "set"; credential: "github_pat"; value: string }
   | { action: "clear"; credential: CredentialKind };
 
 interface CredentialResponse {
@@ -15,7 +28,6 @@ interface CredentialResponse {
   credentials: CredentialStatus;
 }
 
-const CREDENTIAL_KINDS = ["openai_api_key", "github_pat"] as const;
 const LEGACY_STORAGE_KEYS: Record<CredentialKind, string> = {
   openai_api_key: "openai_api_key",
   github_pat: "github_pat",
@@ -66,17 +78,25 @@ async function runLegacyCredentialMigration(): Promise<boolean> {
     let storage: Storage;
     const pendingMigrations: Array<{
       storageKey: string;
-      credential: CredentialKind;
+      credential: "github_pat";
       value: string;
     }> = [];
     try {
       storage = window.localStorage;
-      for (const credential of CREDENTIAL_KINDS) {
-        const storageKey = LEGACY_STORAGE_KEYS[credential];
-        const value = storage.getItem(storageKey);
-        if (value !== null) {
-          pendingMigrations.push({ storageKey, credential, value });
-        }
+      // A legacy API key has no provider, so it is dropped, never uploaded.
+      const legacyApiKey = LEGACY_STORAGE_KEYS.openai_api_key;
+      if (storage.getItem(legacyApiKey) !== null) {
+        storage.removeItem(legacyApiKey);
+      }
+
+      const githubKey = LEGACY_STORAGE_KEYS.github_pat;
+      const githubValue = storage.getItem(githubKey);
+      if (githubValue !== null) {
+        pendingMigrations.push({
+          storageKey: githubKey,
+          credential: "github_pat",
+          value: githubValue,
+        });
       }
     } catch {
       return false;
@@ -110,6 +130,13 @@ export function resetLegacyCredentialMigrationForTests(): void {
   legacyMigrationPromise = undefined;
 }
 
+function isProvider(value: unknown): value is AIProvider {
+  return (
+    typeof value === "string" &&
+    (AI_PROVIDERS as readonly string[]).includes(value)
+  );
+}
+
 function isCredentialResponse(value: unknown): value is CredentialResponse {
   if (!value || typeof value !== "object") {
     return false;
@@ -119,7 +146,10 @@ function isCredentialResponse(value: unknown): value is CredentialResponse {
   return (
     response.ok === true &&
     typeof response.credentials?.openaiApiKeyConfigured === "boolean" &&
-    typeof response.credentials.githubPatConfigured === "boolean"
+    typeof response.credentials.githubPatConfigured === "boolean" &&
+    isProvider(response.credentials.configuredProvider) &&
+    (response.credentials.apiKeyProvider === null ||
+      isProvider(response.credentials.apiKeyProvider))
   );
 }
 
@@ -174,9 +204,32 @@ export async function getCredentialStatus(): Promise<CredentialStatus> {
 }
 
 export async function saveCredential(
+  credential: "openai_api_key",
+  value: string,
+  provider: AIProvider,
+): Promise<CredentialStatus>;
+export async function saveCredential(
+  credential: "github_pat",
+  value: string,
+): Promise<CredentialStatus>;
+export async function saveCredential(
   credential: CredentialKind,
   value: string,
+  provider?: AIProvider,
 ): Promise<CredentialStatus> {
+  if (credential === "openai_api_key") {
+    if (!provider || !isProvider(provider)) {
+      throw new Error("An API key needs the provider it is for.");
+    }
+
+    return performExplicitCredentialMutation({
+      action: "set",
+      credential,
+      value,
+      provider,
+    });
+  }
+
   return performExplicitCredentialMutation({
     action: "set",
     credential,

@@ -6,12 +6,7 @@ import {
   EXPLANATION_ESTIMATED_OUTPUT_TOKENS,
   GRAPH_ESTIMATED_OUTPUT_TOKENS,
 } from "~/server/generate/generation-policy";
-
-export {
-  EXPLANATION_ESTIMATED_OUTPUT_TOKENS,
-  GRAPH_ESTIMATED_OUTPUT_TOKENS,
-  GRAPH_RETRY_INPUT_BUFFER_TOKENS,
-} from "~/server/generate/generation-policy";
+import type { AIProvider } from "~/server/generate/model-config";
 
 export interface ModelPricing {
   inputPerMillionUsd: number;
@@ -61,16 +56,6 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
 // priority tier doubles both.
 const CACHE_PRICED_MODEL = /^gpt-(?:5\.6-(?:luna|terra|sol)|6-(?:luna|sol))$/;
 
-export const MODEL_PRICING_UNAVAILABLE_ERROR =
-  "Cost information is unavailable for the configured AI model.";
-
-export class ModelPricingUnavailableError extends Error {
-  constructor() {
-    super(MODEL_PRICING_UNAVAILABLE_ERROR);
-    this.name = "ModelPricingUnavailableError";
-  }
-}
-
 function normalizeModelId(model: string): string {
   return model.trim().toLowerCase();
 }
@@ -79,57 +64,51 @@ function stripDateSnapshotSuffix(model: string): string {
   return model.replace(/-\d{4}-\d{2}-\d{2}$/i, "");
 }
 
-function stripProviderPrefix(model: string): string {
-  return model.includes("/") ? (model.split("/").at(-1) ?? model) : model;
-}
+/** Find a known OpenAI rate for a model from the selected provider. @see docs/flows/diagram-generation.md */
+export function resolvePricingModel(
+  model: string,
+  provider: AIProvider = "openai",
+): string | null {
+  if (provider !== "openai") {
+    return null;
+  }
 
-export function resolvePricingModel(model: string): string | null {
   const normalized = normalizeModelId(model);
-  if (MODEL_PRICING[normalized]) return normalized;
+  const modelId = normalized.startsWith("openai/")
+    ? normalized.slice("openai/".length)
+    : normalized;
+  if (modelId.includes("/")) {
+    return null;
+  }
 
-  const withoutDate = stripDateSnapshotSuffix(stripProviderPrefix(normalized));
+  const withoutDate = stripDateSnapshotSuffix(modelId);
   if (MODEL_PRICING[withoutDate]) return withoutDate;
 
-  if (withoutDate.startsWith("gpt-6-sol")) return "gpt-6-sol";
-  if (withoutDate.startsWith("gpt-6-luna")) return "gpt-6-luna";
   if (withoutDate === "gpt-5.6") return "gpt-5.6-sol";
-  if (withoutDate.startsWith("gpt-5.6-sol")) return "gpt-5.6-sol";
-  if (withoutDate.startsWith("gpt-5.6-terra")) return "gpt-5.6-terra";
-  if (withoutDate.startsWith("gpt-5.6-luna")) return "gpt-5.6-luna";
-  if (withoutDate.startsWith("gpt-5.4-pro")) return "gpt-5.4-pro";
-  if (withoutDate.startsWith("gpt-5.4-nano")) return "gpt-5.4-nano";
-  if (withoutDate.startsWith("gpt-5.4")) return "gpt-5.4";
-  if (withoutDate.startsWith("gpt-5.2-pro")) return "gpt-5.2-pro";
-  if (withoutDate.startsWith("gpt-5.2-codex")) return "gpt-5.2-codex";
-  if (withoutDate.startsWith("gpt-5.2-chat")) return "gpt-5.2-chat-latest";
-  if (withoutDate.startsWith("gpt-5.2")) return "gpt-5.2";
-  if (withoutDate.startsWith("gpt-5.1")) return "gpt-5.1";
-  if (withoutDate.startsWith("gpt-5-mini")) return "gpt-5-mini";
-  if (withoutDate.startsWith("gpt-5-nano")) return "gpt-5-nano";
-  if (withoutDate.startsWith("gpt-5")) return "gpt-5";
-  if (withoutDate.startsWith("o4-mini")) return "o4-mini";
 
   return null;
 }
 
-export function assertModelPricingAvailable(model: string): string {
-  const pricingModel = resolvePricingModel(model);
-  if (!pricingModel) {
-    throw new ModelPricingUnavailableError();
-  }
-  return pricingModel;
-}
-
+/** Estimate a stage price, or return null when its rate is unknown. @see docs/flows/diagram-generation.md */
 export function estimateTextTokenCostUsd(
   model: string,
   inputTokens: number,
   outputTokens: number,
   serviceTier?: string,
-): { costUsd: number; pricingModel: string; pricing: ModelPricing } {
-  const pricingModel = assertModelPricingAvailable(model);
+  provider?: AIProvider,
+): {
+  costUsd: number | null;
+  pricingModel: string;
+  pricing: ModelPricing | null;
+} {
+  const pricingModel = resolvePricingModel(model, provider);
+  if (!pricingModel) {
+    return { costUsd: null, pricingModel: model.trim(), pricing: null };
+  }
+
   const basePricing = MODEL_PRICING[pricingModel];
   if (!basePricing) {
-    throw new ModelPricingUnavailableError();
+    return { costUsd: null, pricingModel: model.trim(), pricing: null };
   }
   const multiplier =
     CACHE_PRICED_MODEL.test(pricingModel) &&
@@ -217,9 +196,11 @@ function formatCostUsd(costUsd: number): string {
   return `$${costUsd.toFixed(4)} USD`;
 }
 
+/** Keep measured usage even when the model has no known rate. @see docs/flows/diagram-generation.md */
 export function createCostSummary(params: {
   kind: GenerationCostSummary["kind"];
   model: string;
+  provider?: AIProvider;
   usage: GenerationTokenUsage;
   approximate: boolean;
   note?: string;
@@ -232,7 +213,21 @@ export function createCostSummary(params: {
     params.model,
     params.usage.inputTokens,
     params.usage.outputTokens,
+    undefined,
+    params.provider,
   );
+
+  if (baseCostUsd === null || pricing === null) {
+    return {
+      kind: params.kind,
+      approximate: params.approximate,
+      amountUsd: null,
+      display: "n/a",
+      pricingModel,
+      usage: params.usage,
+      ...(params.note ? { note: params.note } : {}),
+    };
+  }
 
   const supportsCachePricing = CACHE_PRICED_MODEL.test(pricingModel);
   const reads = Math.min(
@@ -264,8 +259,10 @@ export function createCostSummary(params: {
   };
 }
 
+/** Price each estimated stage at its own known rate. @see docs/flows/diagram-generation.md */
 export function createEstimateCostSummary(params: {
   model: string;
+  provider?: AIProvider;
   analysisModel?: string;
   explanationInputTokens: number;
   graphStaticInputTokens: number;
@@ -285,6 +282,7 @@ export function createEstimateCostSummary(params: {
     createCostSummary({
       kind: "estimate",
       model,
+      provider: params.provider,
       approximate: params.approximate,
       usage: {
         inputTokens,
@@ -319,19 +317,21 @@ export function createEstimateCostSummary(params: {
   );
 }
 
-/** Sum already-priced stages: applying one model's rate to mixed tokens is wrong. */
+/** Sum stage usage and report n/a if any stage has no known rate. @see docs/flows/diagram-generation.md */
 export function combineCostSummaries(
   summaries: GenerationCostSummary[],
   note?: string,
 ): GenerationCostSummary {
-  const amountUsd = summaries.reduce((sum, entry) => sum + entry.amountUsd, 0);
+  const amountUsd = summaries.some((entry) => entry.amountUsd === null)
+    ? null
+    : summaries.reduce((sum, entry) => sum + (entry.amountUsd ?? 0), 0);
   return {
     kind: summaries.every((entry) => entry.kind === "actual")
       ? "actual"
       : "estimate",
     approximate: summaries.some((entry) => entry.approximate),
     amountUsd,
-    display: formatCostUsd(amountUsd),
+    display: amountUsd === null ? "n/a" : formatCostUsd(amountUsd),
     pricingModel: [
       ...new Set(summaries.map((entry) => entry.pricingModel)),
     ].join(" + "),

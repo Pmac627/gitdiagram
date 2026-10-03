@@ -65,11 +65,7 @@ export function toTerminalSessionAudit(
     analysisModel: audit.analysisModel,
     sourcePaths: audit.sourcePaths,
     unavailableSourceCount: audit.unavailableSourceCount,
-    quotaStatus: audit.quotaStatus,
-    quotaBucket: audit.quotaBucket,
-    quotaDateUtc: audit.quotaDateUtc,
-    actualCommittedTokens: audit.actualCommittedTokens,
-    quotaResetAt: audit.quotaResetAt,
+    redactedSecretCount: audit.redactedSecretCount,
     estimatedCost: audit.estimatedCost,
     finalCost: audit.finalCost,
     // Successful terminals already carry the graph at the top level. Keep it
@@ -108,6 +104,21 @@ export function withExplanation(
   return {
     ...audit,
     explanation,
+    updatedAt: nowIso(),
+  };
+}
+
+export function withRedactedSecrets(
+  audit: GenerationSessionAudit,
+  redactedSecretCount: number,
+): GenerationSessionAudit {
+  if (!Number.isInteger(redactedSecretCount) || redactedSecretCount < 0) {
+    throw new RangeError("redactedSecretCount must be a non-negative integer.");
+  }
+
+  return {
+    ...audit,
+    redactedSecretCount,
     updatedAt: nowIso(),
   };
 }

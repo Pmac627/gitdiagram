@@ -9,7 +9,6 @@ import { RepositoryWorkspace } from "~/components/generation/repository-workspac
 import { loadDiagramRenderer } from "~/components/generation/load-diagram-renderer";
 import { useDiagram } from "~/hooks/useDiagram";
 import { ApiKeyDialog } from "~/components/api-key-dialog";
-import { useStarReminder } from "~/hooks/useStarReminder";
 import { Toaster } from "~/components/ui/sonner";
 import { TooltipProvider } from "~/components/ui/tooltip";
 import { isExampleRepo } from "~/lib/exampleRepos";
@@ -55,7 +54,6 @@ export default function RepoPageClient({
   initialStateIsAuthoritative = false,
 }: RepoPageClientProps) {
   const [showGithubAccess, setShowGithubAccess] = useState(false);
-  useStarReminder();
   const normalizedUsername = username.toLowerCase();
   const normalizedRepo = repo.toLowerCase();
   const repository = `${normalizedUsername}/${normalizedRepo}`;

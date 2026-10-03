@@ -14,8 +14,6 @@ const originalEnv = { ...process.env };
 
 beforeEach(() => {
   process.env.CACHE_KEY_SECRET = "test-cache-key-secret";
-  process.env.R2_PUBLIC_BUCKET = "public-bucket";
-  process.env.R2_PRIVATE_BUCKET = "private-bucket";
 });
 
 afterEach(() => {
@@ -28,7 +26,7 @@ describe("private namespace", () => {
     const second = getPrivateLocation("acme", "demo", "token-two");
 
     expect(first.artifactKey).not.toBe(second.artifactKey);
-    expect(first.bucket).toBe("private-bucket");
+    expect(first.bucket).toBe("private");
   });
 
   it("refuses an empty token instead of writing to a shared namespace", () => {
@@ -66,7 +64,7 @@ describe("getWriteLocation", () => {
         repo: "demo",
         visibility: "public",
       }).bucket,
-    ).toBe("public-bucket");
+    ).toBe("public");
   });
 
   it("throws for a private result the caller did not authenticate for", () => {

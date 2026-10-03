@@ -6,7 +6,23 @@ import type {
   GenerationSessionAudit,
   GraphAttemptAudit,
 } from "~/features/diagram/graph";
-import { toTerminalSessionAudit } from "~/server/generate/session-audit";
+import {
+  createGenerationSessionAudit,
+  toTerminalSessionAudit,
+  withEstimatedCost,
+  withFinalCost,
+  withRedactedSecrets,
+} from "~/server/generate/session-audit";
+import { createCostSummary } from "~/server/generate/pricing";
+
+// Fields an earlier release wrote and this one no longer knows.
+const LEGACY_QUOTA_FIELDS = {
+  quotaStatus: "finalized",
+  quotaBucket: "daily",
+  quotaDateUtc: "2026-07-13",
+  actualCommittedTokens: 2_920,
+  quotaResetAt: "2026-07-14T00:00:00.000Z",
+} as const;
 
 const createdAt = "2026-07-13T17:00:00.000Z";
 const updatedAt = "2026-07-13T17:00:12.000Z";
@@ -87,11 +103,6 @@ function sessionAudit(
     stage: status === "succeeded" ? "complete" : "graph_validating",
     provider: "openai",
     model: "gpt-5.6-terra",
-    quotaStatus: "finalized",
-    quotaBucket: "daily",
-    quotaDateUtc: "2026-07-13",
-    actualCommittedTokens: 2_920,
-    quotaResetAt: "2026-07-14T00:00:00.000Z",
     estimatedCost: { ...actualCost, kind: "estimate", approximate: true },
     finalCost: actualCost,
     explanation: "This repository has a compact request flow. ".repeat(35),
@@ -129,8 +140,61 @@ function sessionAudit(
   };
 }
 
+describe("legacy quota fields", () => {
+  it("are never on a freshly created audit", () => {
+    const audit = createGenerationSessionAudit({
+      sessionId: "session-1",
+      provider: "openai",
+      model: "gpt-5.6-terra",
+    });
+
+    for (const field of Object.keys(LEGACY_QUOTA_FIELDS)) {
+      expect(audit, field).not.toHaveProperty(field);
+      expect(JSON.stringify(audit)).not.toContain(field);
+    }
+  });
+
+  it("are dropped when an old audit that still has them is summarized", () => {
+    const old = {
+      ...sessionAudit("succeeded"),
+      ...LEGACY_QUOTA_FIELDS,
+    } as GenerationSessionAudit;
+    const summary = toTerminalSessionAudit(old);
+
+    for (const field of Object.keys(LEGACY_QUOTA_FIELDS)) {
+      expect(summary, field).not.toHaveProperty(field);
+    }
+    expect(summary.finalCost).toEqual(actualCost);
+  });
+});
+
 describe("toTerminalSessionAudit", () => {
-  it("keeps success cost and quota metadata without repeating result bodies", () => {
+  it("retains unavailable local-model costs and measured usage in the saved audit", () => {
+    const usage = { inputTokens: 90, outputTokens: 10, totalTokens: 100 };
+    const estimate = createCostSummary({
+      kind: "estimate",
+      model: "local/mistral-small",
+      usage,
+      approximate: true,
+    });
+    const actual = createCostSummary({
+      kind: "actual",
+      model: "local/mistral-small",
+      usage,
+      approximate: false,
+    });
+    const audit = withFinalCost(
+      withEstimatedCost(sessionAudit("succeeded"), estimate),
+      actual,
+    );
+
+    expect(toTerminalSessionAudit(audit)).toMatchObject({
+      estimatedCost: { amountUsd: null, display: "n/a", usage },
+      finalCost: { amountUsd: null, display: "n/a", usage },
+    });
+  });
+
+  it("keeps success cost metadata without repeating result bodies", () => {
     const audit = sessionAudit("succeeded");
     const summary = toTerminalSessionAudit(audit);
 
@@ -140,8 +204,6 @@ describe("toTerminalSessionAudit", () => {
       stage: "complete",
       provider: "openai",
       model: "gpt-5.6-terra",
-      quotaStatus: "finalized",
-      actualCommittedTokens: 2_920,
       finalCost: actualCost,
       graph: null,
       graphAttempts: [],
@@ -193,5 +255,30 @@ describe("toTerminalSessionAudit", () => {
 
     expect(legacyBytes).toBeGreaterThan(10_000);
     expect(slimBytes).toBeLessThan(legacyBytes * 0.5);
+  });
+});
+
+describe("secret redaction count in the session audit", () => {
+  const base = () =>
+    createGenerationSessionAudit({
+      sessionId: "s1",
+      provider: "openai",
+      model: "m",
+    });
+
+  it("records only a count, never values, and survives the terminal projection", () => {
+    const audit = withRedactedSecrets(base(), 3);
+
+    expect(audit.redactedSecretCount).toBe(3);
+    expect(toTerminalSessionAudit(audit).redactedSecretCount).toBe(3);
+  });
+
+  it("rejects a negative or non-integer count", () => {
+    expect(() => withRedactedSecrets(base(), -1)).toThrow();
+    expect(() => withRedactedSecrets(base(), 1.5)).toThrow();
+  });
+
+  it("leaves the count unset on a fresh audit", () => {
+    expect(base().redactedSecretCount).toBeUndefined();
   });
 });

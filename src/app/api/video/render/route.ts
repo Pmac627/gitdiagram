@@ -1,27 +1,23 @@
 import { after } from "next/server";
 import { z } from "zod";
+import { requireOperator } from "~/server/auth/require-operator";
 
 import {
   githubRepoSchema,
   githubUsernameSchema,
 } from "~/server/generate/types";
-import { getClientIp } from "~/server/http/client-ip";
 import { errorText, logEvent } from "~/server/log";
 import {
   jsonErrorResponse,
   NO_STORE_RESPONSE_HEADERS,
   parseSameOriginJsonRequest,
 } from "~/server/http/same-origin-json";
-import { emitLiveEvent } from "~/server/admin/live-events";
 import { refreshVideoPages } from "~/server/explainer/cache";
-import { isVideoExplainerEnabled } from "~/server/explainer/config";
 import {
-  isTrustedVideoCaller,
-  reserveRenderSlot,
-  renderLimitMessage,
-  tryVideoLock,
-  type Reservation,
-} from "~/server/explainer/limits";
+  isVideoExplainerEnabled,
+  isVideoRenderEnabled,
+} from "~/server/explainer/config";
+import { isTrustedVideoCaller, tryVideoLock } from "~/server/explainer/limits";
 import { untilAborted } from "~/server/explainer/ffmpeg";
 import { internalOrigin } from "~/server/explainer/render-origin";
 import {
@@ -35,11 +31,6 @@ import {
   readVideoArtifact,
   writeRender,
 } from "~/server/explainer/store";
-import {
-  readVisitor,
-  withVisitorCookie,
-  type Visitor,
-} from "~/server/explainer/visitor";
 import type { VideoRenderEvent } from "~/features/explainer/types";
 
 export const runtime = "nodejs";
@@ -66,13 +57,16 @@ const STALE_MESSAGE =
  * /api/video/file.
  */
 export async function POST(request: Request): Promise<Response> {
-  const visitor = readVisitor(request);
-  return withVisitorCookie(await render(request, visitor), visitor);
-}
+  const denied = await requireOperator(request);
+  if (denied) return denied;
 
-async function render(request: Request, visitor: Visitor): Promise<Response> {
   if (!isVideoExplainerEnabled())
     return jsonErrorResponse("Explainer videos are not enabled.", 404);
+  if (!isVideoRenderEnabled())
+    return Response.json(
+      { ok: false, error: "MP4 rendering is turned off on this server." },
+      { status: 501, headers: NO_STORE_RESPONSE_HEADERS },
+    );
   const parsed = await parseSameOriginJsonRequest(request, {
     schema: requestSchema,
     maxBytes: 1024,
@@ -112,7 +106,6 @@ async function render(request: Request, visitor: Visitor): Promise<Response> {
   const name = format === "vertical" ? "vertical.mp4" : "landscape.mp4";
   if (await hasRender(artifact, name)) return events([{ status: "complete" }]);
 
-  let reservation: Reservation | null = null;
   let releaseLock: (() => Promise<void>) | null = null;
   try {
     if (process.env.NODE_ENV === "production") {
@@ -131,18 +124,7 @@ async function render(request: Request, visitor: Visitor): Promise<Response> {
         return events([{ status: "complete" }]);
       }
     }
-    if (!(await isTrustedVideoCaller(request))) {
-      reservation = await reserveRenderSlot({
-        visitorId: visitor.id,
-        clientIp: getClientIp(request),
-      });
-      if (!reservation.ok) {
-        await releaseLock?.();
-        return jsonErrorResponse(renderLimitMessage(reservation.reason), 429);
-      }
-    }
   } catch {
-    if (reservation?.ok) await reservation.refund();
     await releaseLock?.();
     return jsonErrorResponse(
       "Downloads are unavailable right now. Try again soon.",
@@ -153,14 +135,9 @@ async function render(request: Request, visitor: Visitor): Promise<Response> {
   const origin = internalOrigin(request);
   // One deadline for the whole render, storing included, inside maxDuration.
   const deadline = AbortSignal.timeout(RENDER_TOTAL_DEADLINE_MS);
-  // Once a segment request has gone out, Chromium and ffmpeg are running on
-  // our side. From then on a failure keeps its place in the budget, so a
-  // video that keeps failing (even at the very end, storing the file) cannot
-  // be rendered over and over for free.
+  // Whether a segment request went out: Chromium and ffmpeg were running on
+  // our side by then. Logged with a failure.
   let computeStarted = false;
-  const refundIfUnspent = async () => {
-    if (reservation?.ok && !computeStarted) await reservation.refund();
-  };
   const encoder = new TextEncoder();
   let closed = false;
   let job: Promise<void> = Promise.resolve();
@@ -177,25 +154,14 @@ async function render(request: Request, visitor: Visitor): Promise<Response> {
         }
       };
       const started = Date.now();
-      const jobId = `render:${artifact.repository}:${format}:${started}`;
-      const label = `${artifact.repository} (${format} MP4)`;
-      let outcome: "complete" | "error" = "error";
-      void emitLiveEvent({
-        kind: "render.started",
-        repo: artifact.repository,
-        format,
-        job: { id: jobId, state: "start", label },
-      });
       // The video was regenerated while this rendered, so its file would not
-      // be kept. Only the operator regenerates, so the viewer gets their
-      // place in the budget back.
+      // be kept.
       const superseded = async () => {
         logEvent("info", "video.render.superseded", {
           repository: artifact.repository,
           format,
         });
         send({ status: "error", error: STALE_MESSAGE });
-        if (reservation?.ok) await reservation.refund();
       };
       let last = "";
       job = renderMp4InSegments({
@@ -231,7 +197,6 @@ async function render(request: Request, visitor: Visitor): Promise<Response> {
             bytes: mp4.byteLength,
             ms: Date.now() - started,
           });
-          outcome = "complete";
           send({ status: "complete" });
         })
         .catch(async (error: unknown) => {
@@ -247,7 +212,6 @@ async function render(request: Request, visitor: Visitor): Promise<Response> {
             status: "error",
             error: "The MP4 could not be made. Try again.",
           });
-          await refundIfUnspent();
         })
         .finally(async () => {
           if (!closed) {
@@ -255,14 +219,6 @@ async function render(request: Request, visitor: Visitor): Promise<Response> {
             controller.close();
           }
           await releaseLock?.();
-          await emitLiveEvent({
-            kind: "render.finished",
-            repo: artifact.repository,
-            format,
-            outcome,
-            ms: Date.now() - started,
-            job: { id: jobId, state: "end" },
-          });
         });
     },
     cancel() {
@@ -275,7 +231,7 @@ async function render(request: Request, visitor: Visitor): Promise<Response> {
   return new Response(stream, {
     headers: {
       "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
+      "Cache-Control": "private, no-cache, no-transform",
       "X-Accel-Buffering": "no",
       "X-Content-Type-Options": "nosniff",
     },

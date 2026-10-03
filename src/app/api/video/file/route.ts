@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { requireOperator } from "~/server/auth/require-operator";
 
 import {
   githubRepoSchema,
@@ -6,15 +7,14 @@ import {
 } from "~/server/generate/types";
 import { PICTURE_ID } from "~/features/explainer/types";
 import { jsonErrorResponse } from "~/server/http/same-origin-json";
-import { videoResponseTag } from "~/server/explainer/cache";
 import { isVideoExplainerEnabled } from "~/server/explainer/config";
 import { probePicture } from "~/server/explainer/readme-images";
 import {
-  hasRender,
   readPicture,
   readRender,
   readVideoArtifact,
-  renderDownloadUrl,
+  renderSize,
+  streamRender,
   type RenderName,
 } from "~/server/explainer/store";
 
@@ -48,12 +48,47 @@ const FILES: Record<"landscape" | "vertical" | "poster" | "still", RenderName> =
     still: "still.jpg",
   };
 
+type ByteRange = { start: number; end: number } | "unsatisfiable" | null;
+
 /**
- * A stored render. Posters stream (they are small and feed link previews);
- * MP4s redirect to a short-lived signed R2 URL so large files never pass
- * through a function.
+ * The single byte range a Range header asks for, clamped to the file, or
+ * "unsatisfiable" when it starts past the end. Null when the header is absent
+ * or is not one single "bytes=" range (a browser then gets the whole file).
+ */
+function parseRange(header: string | null, size: number): ByteRange {
+  const match = header ? /^bytes=(\d*)-(\d*)$/.exec(header.trim()) : null;
+
+  if (!match || (match[1] === "" && match[2] === "")) {
+    return null;
+  }
+
+  if (match[1] === "") {
+    const suffix = Number(match[2]);
+
+    return suffix === 0 || size === 0
+      ? "unsatisfiable"
+      : { start: Math.max(0, size - suffix), end: size - 1 };
+  }
+
+  const start = Number(match[1]);
+  const end = match[2] === "" ? size - 1 : Number(match[2]);
+
+  if (start >= size || end < start) {
+    return "unsatisfiable";
+  }
+
+  return { start, end: Math.min(end, size - 1) };
+}
+
+/**
+ * A stored render. Posters are small and sent whole (they feed link
+ * previews). MP4s stream from disk in chunks, and answer Range requests so a
+ * player can seek.
  */
 export async function GET(request: Request): Promise<Response> {
+  const denied = await requireOperator(request);
+  if (denied) return denied;
+
   if (!isVideoExplainerEnabled())
     return jsonErrorResponse("Explainer videos are not enabled.", 404);
   const url = new URL(request.url);
@@ -75,8 +110,7 @@ export async function GET(request: Request): Promise<Response> {
     return new Response(new Uint8Array(body), {
       headers: {
         "Content-Type": picture.type,
-        "Cache-Control":
-          "public, max-age=31536000, s-maxage=31536000, immutable",
+        "Cache-Control": "private, max-age=31536000, immutable",
         "X-Content-Type-Options": "nosniff",
       },
     });
@@ -91,40 +125,54 @@ export async function GET(request: Request): Promise<Response> {
 
   const mp4 = format === "landscape" || format === "vertical";
   if (mp4) {
-    const signed = await renderDownloadUrl(version, name, filename);
-    if (signed) {
-      // A signed URL for a file that is not there lands on R2's XML error.
-      if (!(await hasRender(version, name))) return missing();
+    const size = await renderSize(version, name);
+    if (size === null) return missing();
+
+    const range = parseRange(request.headers.get("range"), size);
+    const headers = {
+      "Content-Type": "video/mp4",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Accept-Ranges": "bytes",
+      // Only local storage serves MP4s, and its URL does not name the engine
+      // that drew the file.
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    };
+
+    if (range === "unsatisfiable") {
       return new Response(null, {
-        status: 302,
-        headers: { Location: signed, "Cache-Control": "no-store" },
+        status: 416,
+        headers: { ...headers, "Content-Range": `bytes */${size}` },
       });
     }
+    if (range) {
+      return new Response(streamRender(version, name, range), {
+        status: 206,
+        headers: {
+          ...headers,
+          "Content-Length": String(range.end - range.start + 1),
+          "Content-Range": `bytes ${range.start}-${range.end}/${size}`,
+        },
+      });
+    }
+    return new Response(size === 0 ? null : streamRender(version, name), {
+      headers: { ...headers, "Content-Length": String(size) },
+    });
   }
   const body = await readRender(version, name);
   if (!body) return missing();
   return new Response(new Uint8Array(body), {
     headers: {
-      "Content-Type": mp4 ? "video/mp4" : "image/jpeg",
-      ...(mp4
-        ? { "Content-Disposition": `attachment; filename="${filename}"` }
-        : {}),
-      "Cache-Control": mp4
-        ? // Only local storage streams MP4s, and its URL does not name the
-          // engine that drew the file.
-          "no-store"
-        : latest
-          ? // Whichever video is current; a new one purges the CDN's copy.
-            "public, max-age=3600, s-maxage=86400"
-          : p
-            ? // The URL names the video version and when the poster was made,
-              // so its bytes never change.
-              "public, max-age=31536000, s-maxage=31536000, immutable"
-            : // Without a stamp a remade poster would reuse this URL.
-              "public, max-age=3600, s-maxage=86400",
-      ...(latest
-        ? { "Vercel-Cache-Tag": videoResponseTag(username, repo) }
-        : {}),
+      "Content-Type": "image/jpeg",
+      "Content-Length": String(body.byteLength),
+      "Cache-Control":
+        !latest && p
+          ? // The URL names the video version and when the poster was made,
+            // so its bytes never change.
+            "private, max-age=31536000, immutable"
+          : // Whichever video is current, or a poster without a stamp (a remade
+            // one would reuse the URL): browsers check back within the hour.
+            "private, max-age=3600",
       "X-Content-Type-Options": "nosniff",
     },
   });

@@ -1,21 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
-import { useEffect } from "react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import type { BrowsePageResult } from "~/features/browse/catalog";
-
-const sponsorMounts = vi.hoisted(() => ({ count: 0 }));
-vi.mock("~/components/sponsor-slot", () => ({
-  SponsorCatalogRow: function SponsorCatalogRow() {
-    useEffect(() => {
-      sponsorMounts.count += 1;
-    }, []);
-    return (
-      <tr data-testid="sponsor-row">
-        <td />
-      </tr>
-    );
-  },
-}));
 
 import { BrowseCatalogResults } from "./browse-catalog-results";
 
@@ -35,7 +20,6 @@ function page(repos: string[]): BrowsePageResult {
     totalPages: 1,
     sort: "stars_desc",
     q: "",
-    minStars: 0,
   };
 }
 
@@ -56,20 +40,12 @@ function results(result: BrowsePageResult) {
   );
 }
 
-it("keeps the ad row after the first listing mounted while the listings change", () => {
-  sponsorMounts.count = 0;
+it("lists one row per repository as the listings change", () => {
+  const rows = () => screen.getAllByRole("row").slice(1);
   const view = render(results(page(["a", "b", "c"])));
-  const rows = () =>
-    screen
-      .getAllByRole("row")
-      .slice(1)
-      .map((row) => row.dataset.testid ?? row.textContent?.split("owner/")[1]);
-  expect(rows()[1]).toBe("sponsor-row");
-  // A search, filter, sort or page change replaces the listing at index 1.
+  expect(rows()).toHaveLength(3);
   view.rerender(results(page(["x", "y"])));
-  view.rerender(results(page(["b", "a", "z"])));
-  expect(rows()[1]).toBe("sponsor-row");
-  expect(sponsorMounts.count).toBe(1);
+  expect(rows()).toHaveLength(2);
   view.rerender(results(page(["only"])));
-  expect(screen.queryByTestId("sponsor-row")).toBeNull();
+  expect(rows()).toHaveLength(1);
 });

@@ -19,11 +19,6 @@ const routeBudgets = [
     maxGzipBytes: 240_000,
   },
   {
-    name: "advertise",
-    route: "/advertise",
-    maxGzipBytes: 190_000,
-  },
-  {
     name: "videos",
     route: "/videos",
     maxGzipBytes: 185_000,

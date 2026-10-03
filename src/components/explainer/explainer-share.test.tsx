@@ -14,10 +14,6 @@ import type { VideoArtifact } from "~/features/explainer/types";
 
 const api = vi.hoisted(() => ({
   streamExplainerRender: vi.fn(),
-  capture: vi.fn(),
-}));
-vi.mock("~/lib/analytics-client", () => ({
-  captureAnalyticsEvent: api.capture,
 }));
 vi.mock("~/features/explainer/api", async (importOriginal) => ({
   ...(await importOriginal<typeof ExplainerApi>()),
@@ -47,7 +43,6 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   api.streamExplainerRender.mockReset();
-  api.capture.mockReset();
 });
 
 describe("ExplainerShare MP4 downloads", () => {
@@ -58,7 +53,7 @@ describe("ExplainerShare MP4 downloads", () => {
         onEvent({ status: "complete" });
       },
     );
-    render(<ExplainerShare video={video} />);
+    render(<ExplainerShare video={video} renderEnabled />);
     await act(async () =>
       fireEvent.click(screen.getByRole("button", { name: "Download MP4" })),
     );
@@ -82,7 +77,7 @@ describe("ExplainerShare MP4 downloads", () => {
     api.streamExplainerRender.mockRejectedValue(
       new VideoRequestError("This video was replaced.", 409, true),
     );
-    render(<ExplainerShare video={video} />);
+    render(<ExplainerShare video={video} renderEnabled />);
     await act(async () =>
       fireEvent.click(screen.getByRole("button", { name: "Vertical MP4" })),
     );
@@ -110,7 +105,7 @@ describe("ExplainerShare MP4 downloads", () => {
         });
       },
     );
-    const view = render(<ExplainerShare video={video} />);
+    const view = render(<ExplainerShare video={video} renderEnabled />);
     fireEvent.click(screen.getByRole("button", { name: "Download MP4" }));
     expect(screen.getByRole("status")).toHaveTextContent(
       "Starting the renderer",
@@ -122,12 +117,52 @@ describe("ExplainerShare MP4 downloads", () => {
   });
 });
 
+describe("ExplainerShare when MP4 rendering is off", () => {
+  it.each([
+    [
+      "renderEnabled={false}",
+      <ExplainerShare key="a" video={video} renderEnabled={false} />,
+    ],
+    [
+      "no renderEnabled prop (fails closed)",
+      <ExplainerShare key="b" video={video} />,
+    ],
+  ])("hides the MP4 and picture actions with %s", (_name, element) => {
+    render(element);
+    expect(screen.queryByRole("button", { name: /Download MP4/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Vertical MP4/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /README picture/ })).toBeNull();
+  });
+
+  it("keeps the link and badge actions", () => {
+    render(<ExplainerShare video={video} renderEnabled={false} />);
+    expect(
+      screen.getByRole("button", { name: /Copy link|Share/ }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: /README badge/ })).toBeTruthy();
+  });
+});
+
+describe("ExplainerShare when MP4 rendering is on", () => {
+  it("shows every action", () => {
+    render(<ExplainerShare video={video} renderEnabled />);
+    for (const name of [
+      "Download MP4",
+      "Vertical MP4",
+      "README badge",
+      "README picture",
+    ]) {
+      expect(screen.getByRole("button", { name })).toBeTruthy();
+    }
+  });
+});
+
 describe("ExplainerShare links", () => {
   it("copies links to the live site, wherever the page is open", async () => {
     const writeText = vi.fn(async () => undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     try {
-      render(<ExplainerShare video={video} />);
+      render(<ExplainerShare video={video} renderEnabled />);
       await act(async () =>
         fireEvent.click(screen.getByRole("button", { name: "Copy link" })),
       );
@@ -138,26 +173,14 @@ describe("ExplainerShare links", () => {
         fireEvent.click(screen.getByRole("button", { name: "README picture" })),
       );
       expect(writeText.mock.calls).toEqual([
-        ["https://gitdiagram.com/acme/tiny/video"],
+        ["https://gitdiagram.tuple.pro/acme/tiny/video"],
         [
-          "[![Watch a one-minute video tour of tiny](https://gitdiagram.com/video-badge.svg)](https://gitdiagram.com/acme/tiny/video)",
+          "[![Watch a one-minute video tour of tiny](https://gitdiagram.tuple.pro/video-badge.svg)](https://gitdiagram.tuple.pro/acme/tiny/video)",
         ],
         [
-          "[![acme/tiny, explained in a one-minute video](https://gitdiagram.com/api/video/file?username=acme&repo=tiny&format=poster)](https://gitdiagram.com/acme/tiny/video)",
+          "[![acme/tiny, explained in a one-minute video](https://gitdiagram.tuple.pro/api/video/file?username=acme&repo=tiny&format=poster)](https://gitdiagram.tuple.pro/acme/tiny/video)",
         ],
       ]);
-      expect(api.capture.mock.calls).toEqual(
-        ["link", "badge", "picture"].map((method) => [
-          "video_shared",
-          {
-            video_repo: "acme/tiny",
-            video_created_at: "2026-09-24T00:00:00.000Z",
-            video_model: "claude-opus-5-5",
-            video_duration: 58,
-            method,
-          },
-        ]),
-      );
     } finally {
       vi.unstubAllGlobals();
     }

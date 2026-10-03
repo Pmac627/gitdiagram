@@ -4,7 +4,7 @@
  * limits keyed on the full address would let one person use billions of keys.
  * IPv4 and IPv4-mapped addresses stay whole.
  *
- * Pure (no Node or server imports): the presence worker bundles it too.
+ * Pure (no Node or server imports).
  */
 export function networkOf(ip: string, prefix: 48 | 64 = 64): string {
   const address = ip.trim().toLowerCase();

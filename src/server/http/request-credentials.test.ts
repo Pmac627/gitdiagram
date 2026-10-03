@@ -70,11 +70,11 @@ describe("request credentials", () => {
   });
 
   it("sets a bounded HttpOnly cookie with the narrow API scope", async () => {
-    await setCredential("openai_api_key", " sk-test ");
+    await setCredential("openai_api_key", " sk-test ", "openai");
 
     expect(mocks.cookieStore.set).toHaveBeenCalledWith(
       "gitdiagram_openai_api_key",
-      "sk-test",
+      JSON.stringify({ version: 1, key: "sk-test", provider: "openai" }),
       expect.objectContaining({
         httpOnly: true,
         sameSite: "strict",
@@ -85,6 +85,8 @@ describe("request credentials", () => {
     await expect(getCredentialStatus()).resolves.toEqual({
       openaiApiKeyConfigured: true,
       githubPatConfigured: false,
+      configuredProvider: "openai",
+      apiKeyProvider: "openai",
     });
   });
 
@@ -105,23 +107,25 @@ describe("request credentials", () => {
     await expect(getCredentialStatus()).resolves.toEqual({
       openaiApiKeyConfigured: false,
       githubPatConfigured: false,
+      configuredProvider: "openai",
+      apiKeyProvider: null,
     });
   });
 
   it("marks stored credentials Secure in production", async () => {
     vi.stubEnv("NODE_ENV", "production");
 
-    await setCredential("openai_api_key", "sk-test");
+    await setCredential("openai_api_key", "sk-test", "openai");
 
     expect(mocks.cookieStore.set).toHaveBeenCalledWith(
       "gitdiagram_openai_api_key",
-      "sk-test",
+      JSON.stringify({ version: 1, key: "sk-test", provider: "openai" }),
       expect.objectContaining({ secure: true }),
     );
   });
 
   it("prefers explicit compatibility credentials over stored cookies", async () => {
-    await setCredential("openai_api_key", "cookie-openai");
+    await setCredential("openai_api_key", "cookie-openai", "openai");
     await setCredential("github_pat", "cookie-github");
 
     await expect(
@@ -136,7 +140,7 @@ describe("request credentials", () => {
   });
 
   it("does not expose cookie credentials to a same-site subdomain", async () => {
-    await setCredential("openai_api_key", "cookie-openai");
+    await setCredential("openai_api_key", "cookie-openai", "openai");
     await setCredential("github_pat", "cookie-github");
 
     await expect(
@@ -150,7 +154,7 @@ describe("request credentials", () => {
   });
 
   it("uses stored credentials for a verified same-origin request", async () => {
-    await setCredential("openai_api_key", "cookie-openai");
+    await setCredential("openai_api_key", "cookie-openai", "openai");
     await setCredential("github_pat", "cookie-github");
 
     await expect(resolveRequestCredentials(request())).resolves.toEqual({

@@ -1,6 +1,8 @@
 import { z } from "zod";
+import { requireOperator } from "~/server/auth/require-operator";
 
 import {
+  aiProviderSchema,
   clearCredential,
   credentialKindSchema,
   getCredentialStatus,
@@ -17,11 +19,17 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MAX_CREDENTIAL_REQUEST_BYTES = 4 * 1_024;
-const credentialActionSchema = z.discriminatedUnion("action", [
+const credentialActionSchema = z.union([
   z.strictObject({ action: z.literal("status") }),
   z.strictObject({
     action: z.literal("set"),
-    credential: credentialKindSchema,
+    credential: z.literal("openai_api_key"),
+    value: storedCredentialSchema,
+    provider: aiProviderSchema,
+  }),
+  z.strictObject({
+    action: z.literal("set"),
+    credential: z.literal("github_pat"),
     value: storedCredentialSchema,
   }),
   z.strictObject({
@@ -31,6 +39,9 @@ const credentialActionSchema = z.discriminatedUnion("action", [
 ]);
 
 export async function POST(request: Request): Promise<Response> {
+  const denied = await requireOperator(request);
+  if (denied) return denied;
+
   const parsed = await parseSameOriginJsonRequest(request, {
     schema: credentialActionSchema,
     maxBytes: MAX_CREDENTIAL_REQUEST_BYTES,
@@ -45,7 +56,13 @@ export async function POST(request: Request): Promise<Response> {
       parsed.data.action === "status"
         ? await getCredentialStatus()
         : parsed.data.action === "set"
-          ? await setCredential(parsed.data.credential, parsed.data.value)
+          ? await setCredential(
+              parsed.data.credential,
+              parsed.data.value,
+              parsed.data.credential === "openai_api_key"
+                ? parsed.data.provider
+                : undefined,
+            )
           : await clearCredential(parsed.data.credential);
 
     return Response.json(

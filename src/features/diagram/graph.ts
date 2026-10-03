@@ -122,11 +122,8 @@ export interface GenerationSessionAudit {
   analysisModel?: string;
   sourcePaths?: string[];
   unavailableSourceCount?: number;
-  quotaStatus?: "admitted" | "denied" | "finalized";
-  quotaBucket?: string;
-  quotaDateUtc?: string;
-  actualCommittedTokens?: number;
-  quotaResetAt?: string;
+  /** Secrets replaced by markers in source files and the README; never values. */
+  redactedSecretCount?: number;
   estimatedCost?: GenerationCostSummary;
   finalCost?: GenerationCostSummary;
   explanation?: string;

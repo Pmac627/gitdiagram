@@ -1,8 +1,7 @@
 import "server-only";
 
 // Claude API list prices in USD per million tokens, shared by the video cost
-// accounting (explainer/director.ts) and the /admin credit estimate
-// (admin/claude-credit.ts). Cache writes cost 1.25× input for 5 minutes and 2×
+// accounting (explainer/director.ts). Cache writes cost 1.25× input for 5 minutes and 2×
 // for an hour; cache reads have their own rate per model (0.1× input on most,
 // 0.05× on Opus 5.5, 0.025× on Fable 5.1). Checked 2026-09-25.
 
@@ -20,9 +19,6 @@ const PRICES: Record<string, ClaudePrice> = {
   "claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2 },
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1 },
 };
-
-/** The most expensive model, for estimates that should err high. */
-export const HIGHEST_CLAUDE_PRICE = PRICES["claude-fable-5-1"]!;
 
 /**
  * A model's price. Dated, "-latest" or provider-prefixed ids

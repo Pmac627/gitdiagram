@@ -62,7 +62,6 @@ export function getBrowsePageUrl(query: BrowseQuery) {
   const params = buildBrowseSearchParams({
     q: normalizedQuery.q,
     sort: normalizedQuery.sort,
-    minStars: normalizedQuery.minStars,
     page: normalizedQuery.page,
   });
   const queryString = params.toString();
@@ -74,7 +73,7 @@ async function fetchBrowsePage(
   signal: AbortSignal,
 ): Promise<BrowsePageResult | null> {
   const response = await fetch(getBrowsePageUrl(query), {
-    credentials: "omit",
+    credentials: "same-origin",
     signal,
   });
 

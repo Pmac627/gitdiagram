@@ -118,7 +118,7 @@ describe("streamDiagramGeneration", () => {
     );
   });
   it("waits for legacy credential migration before starting the stream", async () => {
-    window.localStorage.setItem("openai_api_key", "legacy-openai");
+    window.localStorage.setItem("github_pat", "legacy-github");
     let acceptMigration!: (response: Response) => void;
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       if (input === "/api/credentials") {
@@ -200,7 +200,7 @@ describe("streamDiagramGeneration", () => {
     );
   });
 
-  it("sends a credential-free keepalive cancellation when the caller aborts", async () => {
+  it("sends a keepalive cancellation with the session cookie when the caller aborts", async () => {
     const abortController = new AbortController();
     const fetchMock = vi.fn(
       (url: string, init?: RequestInit): Promise<Response> => {
@@ -241,7 +241,7 @@ describe("streamDiagramGeneration", () => {
       expect.objectContaining({
         method: "POST",
         keepalive: true,
-        credentials: "omit",
+        credentials: "same-origin",
         body: JSON.stringify({
           session_id: streamBody.session_id,
           cancel_token: streamBody.cancel_token,
@@ -447,6 +447,8 @@ function configuredCredentialResponse(): Response {
     credentials: {
       openaiApiKeyConfigured: true,
       githubPatConfigured: true,
+      configuredProvider: "openai",
+      apiKeyProvider: "openai",
     },
   });
 }

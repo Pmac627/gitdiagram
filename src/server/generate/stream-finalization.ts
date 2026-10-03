@@ -1,12 +1,7 @@
 import type { GenerationSessionAudit } from "~/features/diagram/graph";
-import {
-  finalizeComplimentaryQuota,
-  type ComplimentaryQuotaReservation,
-} from "~/server/generate/complimentary-gate";
 import type { GenerationUsageAccounting } from "~/server/generate/graph-planner";
 import type { GraphValidationCategory } from "~/server/generate/graph";
 import { sumGenerationUsage } from "~/server/generate/pricing";
-import { refundGenerationRateLimit } from "~/server/generate/rate-limit";
 import type { GenerationStreamState } from "~/server/generate/sse-writer";
 import {
   persistGenerationResult,
@@ -18,14 +13,10 @@ type PostResponseTask = () => Promise<void>;
 
 export interface FinalizeGenerationStreamParams {
   abortCause: "client" | "deadline" | null;
-  accounting: GenerationUsageAccounting;
   apiKey?: string;
   audit: GenerationSessionAudit;
   githubPat?: string;
   postResponseTasks: PostResponseTask[];
-  quotaReservation: ComplimentaryQuotaReservation | null;
-  rateLimitedClientIp: string | null;
-  rateLimitedWindowStartSeconds: number;
   recordTiming: (stage: string, startedAt: number) => void;
   repo: string;
   repositoryVerified: boolean;
@@ -34,7 +25,6 @@ export interface FinalizeGenerationStreamParams {
     persistenceWarning?: string,
   ) => Promise<boolean>;
   storageVisibility: ArtifactVisibility;
-  streamState: GenerationStreamState;
   successfulDiagramState: SuccessfulDiagramState | null;
   username: string;
 }
@@ -42,61 +32,12 @@ export interface FinalizeGenerationStreamParams {
 export async function finalizeGenerationStream(
   params: FinalizeGenerationStreamParams,
 ): Promise<GenerationSessionAudit> {
-  let audit = params.audit;
+  const audit = params.audit;
   let terminalSent = false;
   let persistenceWarning: string | undefined;
 
   if (params.abortCause === "deadline") {
     terminalSent = await params.sendTerminal(audit);
-  }
-
-  if (params.quotaReservation) {
-    const quotaFinalizationStartedAt = performance.now();
-    const measuredCommittedTokens = sumGenerationUsage(
-      ...params.accounting.actualUsages,
-    ).totalTokens;
-    // Output can exceed the reservation estimate. Even when another stage is
-    // interrupted, never clamp measured usage back down to that reservation.
-    const actualCommittedTokens =
-      params.accounting.hasCompleteMeasuredUsage &&
-      params.accounting.completedUnmeasuredTokenEstimate === 0 &&
-      !params.streamState.wasCancelled
-        ? measuredCommittedTokens
-        : Math.max(
-            measuredCommittedTokens,
-            Math.min(
-              params.quotaReservation.reservedTokens,
-              measuredCommittedTokens +
-                params.accounting.completedUnmeasuredTokenEstimate +
-                params.accounting.pendingModelRequestTokenEstimate,
-            ),
-          );
-
-    try {
-      await finalizeComplimentaryQuota({
-        reservation: params.quotaReservation,
-        committedTokens: actualCommittedTokens,
-      });
-      audit = {
-        ...audit,
-        quotaStatus: "finalized",
-        quotaBucket: params.quotaReservation.quotaBucket,
-        quotaDateUtc: params.quotaReservation.quotaDateUtc,
-        actualCommittedTokens,
-        quotaResetAt: params.quotaReservation.quotaResetAt,
-      };
-    } catch (quotaError) {
-      console.error(
-        JSON.stringify({
-          event: "generate.quota.finalization_failed",
-          session_id: audit.sessionId,
-          error:
-            quotaError instanceof Error ? quotaError.message : "Unknown error",
-        }),
-      );
-    } finally {
-      params.recordTiming("quota_finalization", quotaFinalizationStartedAt);
-    }
   }
 
   if (params.repositoryVerified) {
@@ -111,13 +52,6 @@ export async function finalizeGenerationStream(
       postResponseTasks: params.postResponseTasks,
       recordTiming: params.recordTiming,
     });
-  } else if (params.rateLimitedClientIp) {
-    params.postResponseTasks.push(() =>
-      refundGenerationRateLimit({
-        clientIp: params.rateLimitedClientIp,
-        windowStartSeconds: params.rateLimitedWindowStartSeconds,
-      }),
-    );
   }
 
   if (!terminalSent) {
@@ -158,6 +92,7 @@ export function logGenerationFinished(params: {
       analysis_model: params.audit.analysisModel ?? params.audit.model,
       source_file_count: params.audit.sourcePaths?.length ?? 0,
       unavailable_source_count: params.audit.unavailableSourceCount ?? 0,
+      redacted_secret_count: params.audit.redactedSecretCount ?? 0,
       cost_usd: params.audit.finalCost?.amountUsd,
       cost_is_estimate: params.audit.finalCost?.kind === "estimate",
       slow_request_retries: params.audit.stageUsages.filter(
@@ -173,7 +108,6 @@ export function logGenerationFinished(params: {
       cached_input_tokens: totalUsage.cachedInputTokens ?? 0,
       reasoning_tokens: totalUsage.reasoningTokens ?? 0,
       graph_validation_categories: params.graphValidationCategoryCounts,
-      quota_committed_tokens: params.audit.actualCommittedTokens ?? null,
     }),
   );
 }

@@ -47,3 +47,20 @@ it("keeps cost visible when an old diagram has no saved date", () => {
   expect(screen.getByText("Actual cost: $0.0100 USD")).toBeVisible();
   expect(document.querySelector("time")).toBeNull();
 });
+
+it("shows n/a for a local model without an advertised price", () => {
+  render(
+    <DiagramMetadata
+      cost={{
+        kind: "actual",
+        approximate: false,
+        amountUsd: null as unknown as number,
+        display: "n/a",
+        pricingModel: "local/mistral-small",
+        usage: { inputTokens: 100, outputTokens: 25, totalTokens: 125 },
+      }}
+    />,
+  );
+
+  expect(screen.getByText("Actual cost: n/a")).toBeVisible();
+});

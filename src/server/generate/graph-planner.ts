@@ -7,8 +7,7 @@ import {
   type GraphAttemptAudit,
 } from "~/features/diagram/graph";
 import type { DiagramStreamMessage } from "~/features/diagram/types";
-import type { ComplimentaryAdmissionEstimate } from "./complimentary-gate";
-import { buildComplimentaryStageTokenEstimate } from "./complimentary-gate";
+import type { GenerationProvider } from "~/server/ai/provider";
 import {
   GRAPH_REASONING_EFFORT,
   GRAPH_TEXT_VERBOSITY,
@@ -23,7 +22,6 @@ import {
   validateDiagramGraph,
 } from "./graph";
 import type { AIProvider } from "./model-config";
-import { generateStructuredOutput } from "./openai";
 import { createCostSummary } from "./pricing";
 import { SYSTEM_GRAPH_PROMPT } from "./prompts";
 import {
@@ -33,20 +31,23 @@ import {
   withTimelineEvent,
 } from "./session-audit";
 
+/**
+ * Collect measured token usage across generation stages.
+ * @see docs/flows/diagram-generation.md
+ */
 export interface GenerationUsageAccounting {
   actualUsages: GenerationTokenUsage[];
-  // Completed stages; cancelled requests retain separate cost/token estimates.
+  // False once a stage ran without provider-measured usage; the final cost is
+  // then an estimate.
   hasCompleteMeasuredUsage: boolean;
-  completedUnmeasuredTokenEstimate: number;
-  pendingModelRequestTokenEstimate: number;
 }
 
 type StreamSend = (payload: DiagramStreamMessage) => Promise<boolean>;
 
 interface GenerateValidatedGraphParams {
   provider: AIProvider;
+  generationProvider: GenerationProvider;
   model: string;
-  apiKey?: string;
   sessionId: string;
   explanation: string;
   initialGraph?: DiagramGraph;
@@ -54,13 +55,16 @@ interface GenerateValidatedGraphParams {
   fileTreeLookup: Set<string>;
   signal: AbortSignal;
   audit: GenerationSessionAudit;
-  complimentaryEstimate: ComplimentaryAdmissionEstimate | null;
   accounting: GenerationUsageAccounting;
   validationCategoryCounts: Partial<Record<GraphValidationCategory, number>>;
   recordTiming: (stage: string, startedAt: number) => void;
   send: StreamSend;
 }
 
+/**
+ * Report the accepted graph or the final validation failure.
+ * @see docs/flows/diagram-generation.md
+ */
 export type ValidatedGraphResult =
   | {
       ok: true;
@@ -73,6 +77,10 @@ export type ValidatedGraphResult =
       validationError: string;
     };
 
+/**
+ * Request and validate a repository graph through the selected provider.
+ * @see docs/flows/diagram-generation.md
+ */
 export async function generateValidatedGraph(
   params: GenerateValidatedGraphParams,
 ): Promise<ValidatedGraphResult> {
@@ -105,14 +113,6 @@ export async function generateValidatedGraph(
       graph_attempts: audit.graphAttempts,
     });
 
-    if (!initialGraph)
-      params.accounting.pendingModelRequestTokenEstimate =
-        params.complimentaryEstimate
-          ? buildComplimentaryStageTokenEstimate(params.complimentaryEstimate, {
-              stage: "graph",
-              attempt,
-            })
-          : 0;
     const graphStartedAt = performance.now();
     const {
       output: generatedGraph,
@@ -124,8 +124,7 @@ export async function generateValidatedGraph(
           rawText: JSON.stringify(initialGraph),
           usage: null,
         }
-      : await generateStructuredOutput({
-          provider: params.provider,
+      : await params.generationProvider.parseStructured({
           model: params.model,
           systemPrompt: SYSTEM_GRAPH_PROMPT,
           userPrompt: toTaggedMessage(
@@ -140,7 +139,6 @@ export async function generateValidatedGraph(
           ),
           schema: diagramGraphSchema,
           schemaName: "diagram_graph",
-          apiKey: params.apiKey,
           reasoningEffort: GRAPH_REASONING_EFFORT,
           textVerbosity: GRAPH_TEXT_VERBOSITY,
           signal: params.signal,
@@ -155,7 +153,6 @@ export async function generateValidatedGraph(
 
     if (usage) {
       params.accounting.actualUsages.push(usage);
-      params.accounting.pendingModelRequestTokenEstimate = 0;
       audit = withStageUsage(audit, {
         stage: "graph_attempt",
         attempt,
@@ -163,6 +160,7 @@ export async function generateValidatedGraph(
         costSummary: createCostSummary({
           kind: "actual",
           model: params.model,
+          provider: params.provider,
           usage,
           approximate: false,
         }),
@@ -170,9 +168,6 @@ export async function generateValidatedGraph(
       });
     } else if (!initialGraph) {
       params.accounting.hasCompleteMeasuredUsage = false;
-      params.accounting.completedUnmeasuredTokenEstimate +=
-        params.accounting.pendingModelRequestTokenEstimate;
-      params.accounting.pendingModelRequestTokenEstimate = 0;
     }
 
     void params.send({

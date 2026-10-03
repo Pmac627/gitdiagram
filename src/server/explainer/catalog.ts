@@ -14,12 +14,7 @@ import {
 } from "~/features/explainer/catalog-types";
 import { errorText, logEvent } from "~/server/log";
 import { VIDEO_CATALOG_TAG } from "./cache";
-import {
-  listStoredVideos,
-  readVideoArtifact,
-  renderStamp,
-  videoStoreBackend,
-} from "./store";
+import { listStoredVideos, readVideoArtifact, renderStamp } from "./store";
 import {
   claimVideoIndexBuild,
   fillVideoIndex,
@@ -68,14 +63,12 @@ const newestFirst = (cards: VideoCard[]) =>
   cards.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
 /**
- * Every stored video, newest first. Production reads the Redis index; until
- * it has been built completely, one caller at a time builds it from R2 (the
- * others list what is indexed so far), and if Redis is down the list comes
- * from R2 itself. Throws when neither can be read.
+ * Every stored video, newest first. Reads the SQLite index; until it has
+ * been built completely, one caller at a time builds it from the video files
+ * (the others list what is indexed so far), and if the index cannot be read
+ * the list comes from the files themselves. Throws when neither can be read.
  */
 export async function listVideoCards(): Promise<VideoCard[]> {
-  if (videoStoreBackend() !== "r2")
-    return newestFirst((await cardsFromStorage()).cards);
   let indexed: Awaited<ReturnType<typeof readVideoIndex>>;
   try {
     indexed = await readVideoIndex();

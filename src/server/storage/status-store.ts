@@ -5,13 +5,14 @@ import {
   getWriteLocation,
   type StorageLocation,
 } from "~/server/storage/cache-key";
-import { upstashCommand } from "~/server/storage/upstash";
+import { getDb, withImmediateTransaction } from "~/server/storage/db";
+import { kvRead, kvRemove, kvWrite } from "~/server/storage/kv";
 import type {
   ArtifactVisibility,
   StoredFailureSummary,
 } from "~/server/storage/types";
 
-const STATUS_TTL_SECONDS = 3 * 24 * 60 * 60;
+const STATUS_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 
 function toDiagramStateResponse(
   summary: StoredFailureSummary,
@@ -28,10 +29,7 @@ function toDiagramStateResponse(
 async function getSummaryForLocation(
   location: StorageLocation,
 ): Promise<StoredFailureSummary | null> {
-  const result = await upstashCommand<string | null>([
-    "GET",
-    location.statusKey,
-  ]);
+  const result = kvRead(getDb(), location.statusKey, Date.now());
   if (!result) {
     return null;
   }
@@ -71,13 +69,19 @@ export async function writeFailureSummary(params: {
     latestSessionSummary: params.latestSessionSummary,
   };
 
-  await upstashCommand([
-    "SET",
-    location.statusKey,
-    JSON.stringify(summary),
-    "EX",
-    STATUS_TTL_SECONDS,
-  ]);
+  withImmediateTransaction((db) => {
+    const now = Date.now();
+
+    // Expired summaries read as absent; drop them so the table stays small.
+    db.prepare("DELETE FROM kv WHERE expires_at <= ?").run(now);
+    kvWrite(
+      db,
+      location.statusKey,
+      JSON.stringify(summary),
+      STATUS_TTL_MS,
+      now,
+    );
+  });
 }
 
 export async function clearFailureSummary(params: {
@@ -88,5 +92,7 @@ export async function clearFailureSummary(params: {
 }): Promise<void> {
   const location = getWriteLocation(params);
 
-  await upstashCommand(["DEL", location.statusKey]);
+  withImmediateTransaction((db) => {
+    kvRemove(db, location.statusKey);
+  });
 }

@@ -7,7 +7,7 @@ import type {
   BrowseQuery,
   RecentBrowseIndex,
 } from "~/features/browse/catalog";
-import { readRequiredEnv } from "./config";
+import { getPublicBucketName } from "./cache-key";
 import { withDistributedLock } from "./distributed-lock";
 import {
   deleteObject,
@@ -15,14 +15,10 @@ import {
   getGzipJsonObjectWithEtag,
   getJsonObject,
   putGzipJsonObject,
-} from "./r2";
-import type { ObjectReadResult, ObjectWriteCondition } from "./r2";
-import {
-  acknowledgePendingBrowseIndexEntries,
-  enqueuePendingBrowseIndexEntry,
-  readPendingBrowseIndexEntries,
-} from "./browse-index-pending";
+} from "./object-store";
+import type { ObjectReadResult, ObjectWriteCondition } from "./object-store";
 
+import { errorText } from "~/server/log";
 const LEGACY_PUBLIC_BROWSE_INDEX_KEY = "public/v1/_meta/browse-index.json";
 const PUBLIC_BROWSE_INDEX_KEY = "public/v2/_meta/browse-index.json.gz";
 const PUBLIC_RECENT_BROWSE_INDEX_KEY = "public/v2/_meta/browse-recent.json.gz";
@@ -89,7 +85,7 @@ export class BrowseIndexNotFoundError extends Error {
 }
 
 function getPublicBucket(): string {
-  return readRequiredEnv("R2_PUBLIC_BUCKET");
+  return getPublicBucketName();
 }
 
 function compareIsoDatesDescending(left: string, right: string) {
@@ -219,8 +215,9 @@ async function readStoredBrowseIndex(): Promise<StoredBrowseIndex | null> {
   );
 }
 
-export async function readBrowseIndex(): Promise<BrowseIndexEntry[] | null> {
-  return (await readStoredBrowseIndex())?.entries ?? null;
+/** The stored index; empty until the first public diagram is indexed. */
+export async function readBrowseIndex(): Promise<BrowseIndexEntry[]> {
+  return (await readStoredBrowseIndex())?.entries ?? [];
 }
 
 export async function readRecentBrowseIndex(): Promise<RecentBrowseIndex | null> {
@@ -260,7 +257,7 @@ export async function migrateBrowseIndexToAtomicV3(): Promise<number> {
     waitMs: BROWSE_INDEX_LOCK_WAIT_MS,
     callback: async () =>
       (
-        await materializePendingBrowseIndex({
+        await materializeBrowseIndex({
           generation: randomUUID(),
           requireExistingIndex: true,
         })
@@ -400,7 +397,7 @@ async function writeBrowseIndex(
           JSON.stringify({
             event: "browse.index.snapshot_cleanup_failed",
             snapshot_key: retiredSnapshotKey,
-            error: error instanceof Error ? error.message : "Unknown error",
+            error: errorText(error),
           }),
         );
       }
@@ -410,14 +407,19 @@ async function writeBrowseIndex(
   return params.entries;
 }
 
-async function materializePendingBrowseIndex(params: {
+/**
+ * Reads the stored index, applies `entry` when given, and commits a new
+ * snapshot and manifest when anything changed (or when a legacy index is
+ * being upgraded). Without `requireExistingIndex` a missing index is created.
+ * Callers hold the browse-index lock.
+ */
+async function materializeBrowseIndex(params: {
   generation: string;
+  entry?: BrowseIndexEntry;
   requireExistingIndex?: boolean;
 }): Promise<BrowseIndexEntry[]> {
-  const [stored, pending] = await Promise.all([
-    readStoredBrowseIndex(),
-    readPendingBrowseIndexEntries(),
-  ]);
+  const stored = await readStoredBrowseIndex();
+
   if (!stored && params.requireExistingIndex) {
     throw new BrowseIndexNotFoundError();
   }
@@ -425,31 +427,32 @@ async function materializePendingBrowseIndex(params: {
   const entries = stored?.activeSnapshotKey
     ? stored.entries
     : normalizeBrowseIndexEntries(stored?.entries ?? []);
-  let changed = false;
-  for (const pendingEntry of pending) {
-    changed = applyBrowseIndexEntry(entries, pendingEntry.entry) || changed;
+  const changed = params.entry
+    ? applyBrowseIndexEntry(entries, params.entry)
+    : false;
+
+  if (stored?.activeSnapshotKey && !changed) {
+    return entries;
   }
 
-  const materializedEntries =
-    !stored?.activeSnapshotKey || changed
-      ? await writeBrowseIndex(
-          {
-            entries,
-            retainedSnapshotKeys: stored?.retainedSnapshotKeys ?? [],
-            expectedManifestEtag: stored?.manifestEtag ?? null,
-          },
-          { generation: params.generation },
-        )
-      : entries;
-  await acknowledgePendingBrowseIndexEntries(pending);
-  return materializedEntries;
+  return writeBrowseIndex(
+    {
+      entries,
+      retainedSnapshotKeys: stored?.retainedSnapshotKeys ?? [],
+      expectedManifestEtag: stored?.manifestEtag ?? null,
+    },
+    { generation: params.generation },
+  );
 }
 
+/**
+ * Applies one entry to the public browse index under its lock, creating the
+ * index when none exists. Retries a few times on a lost race or a busy lock.
+ */
 export async function upsertBrowseIndexEntry(
   entry: BrowseIndexEntry,
 ): Promise<BrowseIndexEntry[]> {
   const normalizedEntry = normalizeBrowseIndexEntry(entry);
-  await enqueuePendingBrowseIndexEntry(normalizedEntry);
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= BROWSE_INDEX_WRITE_ATTEMPTS; attempt++) {
@@ -459,40 +462,14 @@ export async function upsertBrowseIndexEntry(
         ttlMs: BROWSE_INDEX_LOCK_TTL_MS,
         waitMs: BROWSE_INDEX_LOCK_WAIT_MS,
         callback: () =>
-          materializePendingBrowseIndex({
+          materializeBrowseIndex({
             generation: randomUUID(),
-            requireExistingIndex: true,
+            entry: normalizedEntry,
           }),
       });
     } catch (error) {
       lastError = error;
-      if (attempt < BROWSE_INDEX_WRITE_ATTEMPTS) {
-        await new Promise((resolve) => setTimeout(resolve, attempt * 100));
-      }
-    }
-  }
 
-  throw lastError;
-}
-
-export async function drainPendingBrowseIndex(): Promise<number> {
-  let lastError: unknown;
-
-  for (let attempt = 1; attempt <= BROWSE_INDEX_WRITE_ATTEMPTS; attempt++) {
-    try {
-      const entries = await withDistributedLock({
-        key: PUBLIC_BROWSE_INDEX_LOCK_KEY,
-        ttlMs: BROWSE_INDEX_LOCK_TTL_MS,
-        waitMs: BROWSE_INDEX_LOCK_WAIT_MS,
-        callback: () =>
-          materializePendingBrowseIndex({
-            generation: randomUUID(),
-            requireExistingIndex: true,
-          }),
-      });
-      return entries.length;
-    } catch (error) {
-      lastError = error;
       if (attempt < BROWSE_INDEX_WRITE_ATTEMPTS) {
         await new Promise((resolve) => setTimeout(resolve, attempt * 100));
       }
@@ -505,10 +482,5 @@ export async function drainPendingBrowseIndex(): Promise<number> {
 export async function getBrowsePage(
   query: BrowseQuery,
 ): Promise<BrowsePageResult> {
-  const stored = await readStoredBrowseIndex();
-  if (!stored) {
-    throw new BrowseIndexNotFoundError();
-  }
-
-  return getBrowsePageFromEntries(stored.entries, query);
+  return getBrowsePageFromEntries(await readBrowseIndex(), query);
 }

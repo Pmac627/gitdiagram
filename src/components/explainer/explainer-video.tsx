@@ -33,17 +33,9 @@ const STAGE_TITLES: Record<VideoGenerationStage, string> = {
   saving: "Saving the video",
 };
 
-function isTouchMac() {
-  return navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent);
-}
-
 const PAUSED: Record<VideoPausedReason, string> = {
-  audience:
-    "Making new videos is in early access in a few places for now. Every video already made is free to watch.",
-  device:
-    "Making new videos needs a computer here for now. Every video already made is free to watch.",
   limit:
-    "Today's free videos have all been made. Check back tomorrow; every video already made is free to watch.",
+    "New videos are paused for now. Every video already made is free to watch.",
 };
 
 // A stored video belongs to everyone: only the operator, with admin controls
@@ -58,7 +50,7 @@ function useCanRegenerate(): boolean {
     if (DEVELOPMENT || !adminTools) return;
     const controller = new AbortController();
     // The switch is only this browser's preference; the session decides.
-    fetch("/api/admin/session", {
+    fetch("/api/auth/session", {
       cache: "no-store",
       signal: controller.signal,
     })
@@ -89,15 +81,10 @@ function lookedUp({
   video,
   canGenerate,
   paused,
-  anyDevice,
   generating,
 }: ExplainerVideoState): PanelState {
   if (video) return { kind: "ready", video };
   if (generating) return { kind: "waiting" };
-  // iPads report a desktop Mac to the server; hold them back when this
-  // visitor was let in only as a desktop.
-  if (isTouchMac() && !anyDevice)
-    return { kind: "empty", canGenerate: false, paused: "device" };
   return { kind: "empty", canGenerate, paused };
 }
 
@@ -167,11 +154,16 @@ export function ExplainerVideo({
   const state: PanelState = run ?? lookedUpState;
   const canRegenerate = useCanRegenerate();
   const [confirming, setConfirming] = useState(false);
+  // The last lookup's answer, kept while a run replaces the panel's state.
+  const [renderEnabled, setRenderEnabled] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
     lookUpStoredVideo(username, repo, controller.signal)
-      .then((result) => setState(lookedUp(result)))
+      .then((result) => {
+        setRenderEnabled(result.renderEnabled === true);
+        setState(lookedUp(result));
+      })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         setState({
@@ -202,6 +194,7 @@ export function ExplainerVideo({
         .then((result) => {
           if (result.generating) return;
           clearVideoRun(username, repo);
+          setRenderEnabled(result.renderEnabled === true);
           setState(lookedUp(result));
         })
         // A missed poll is retried on the next tick.
@@ -225,7 +218,12 @@ export function ExplainerVideo({
           ? state.previous
           : undefined;
     setConfirming(false);
-    startVideoRun(username, repo, previous);
+    // A stored video to keep means this is a regeneration: the server replaces
+    // a video only when asked to, and "Try again" after a failed regeneration
+    // asks again. A first video never sends the flag.
+    startVideoRun(username, repo, previous, {
+      regenerate: previous !== undefined,
+    });
   };
 
   const retryLookup = () => {
@@ -286,7 +284,7 @@ export function ExplainerVideo({
               </button>
             ))}
         </div>
-        <ExplainerShare video={video} />
+        <ExplainerShare video={video} renderEnabled={renderEnabled} />
       </div>
     );
   }

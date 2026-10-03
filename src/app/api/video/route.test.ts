@@ -2,30 +2,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  readAdmissionControls: vi.fn(),
-  reportHeldBack: vi.fn(),
+  isVideoAdmin: vi.fn(),
   readVideoArtifact: vi.fn(),
   isVideoLockHeld: vi.fn(),
-  videoLimitReached: vi.fn(),
+  removedDependency: vi.fn(),
   isNarrationAvailable: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
-vi.mock("~/server/admin/controls", () => ({
-  readAdmissionControls: mocks.readAdmissionControls,
-}));
-vi.mock("~/server/explainer/gate-notice", () => ({
-  reportHeldBack: mocks.reportHeldBack,
-}));
 vi.mock("~/server/explainer/config", () => ({
   canGenerateVideos: () => true,
   isVideoExplainerEnabled: () => true,
+  isVideoRenderEnabled: () => process.env.VIDEO_RENDER_ENABLED?.trim() === "1",
 }));
 vi.mock("~/server/explainer/limits", () => ({
   generationLockName: (u: string, r: string) => `generate:${u}/${r}`,
-  isVideoAdmin: () => false,
+  isVideoAdmin: mocks.isVideoAdmin,
   isVideoLockHeld: mocks.isVideoLockHeld,
-  videoLimitReached: mocks.videoLimitReached,
+  // Removed in Phase 3: no per-person or per-connection budget is read.
+  videoLimitReached: mocks.removedDependency,
 }));
 vi.mock("~/server/explainer/narration", () => ({
   isNarrationAvailable: mocks.isNarrationAvailable,
@@ -34,30 +29,50 @@ vi.mock("~/server/explainer/store", () => ({
   readVideoArtifact: mocks.readVideoArtifact,
 }));
 
+import { registerOperatorSession } from "~/server/auth/test-session";
+
 import { GET } from "./route";
+
+const session = registerOperatorSession();
 
 const get = (headers: Record<string, string> = {}) =>
   GET(
     new Request("https://gitdiagram.com/api/video?username=acme&repo=demo", {
-      headers,
+      headers: { ...session.headers, ...headers },
     }),
   );
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv("NODE_ENV", "production");
-  mocks.readAdmissionControls.mockResolvedValue({
-    videoAudience: "everyone",
-    videosPaused: false,
-  });
+  mocks.isVideoAdmin.mockResolvedValue(false);
   mocks.readVideoArtifact.mockResolvedValue(null);
   mocks.isVideoLockHeld.mockResolvedValue(false);
-  mocks.videoLimitReached.mockResolvedValue(null);
   mocks.isNarrationAvailable.mockResolvedValue(true);
 });
 
 afterEach(() => {
   vi.unstubAllEnvs();
+});
+
+describe("GET /api/video renderEnabled", () => {
+  it.each([
+    ["no video", null],
+    ["a stored video", { repository: "acme/demo" }],
+  ])("is false for %s when MP4 rendering is off", async (_name, stored) => {
+    vi.stubEnv("VIDEO_RENDER_ENABLED", "");
+    mocks.readVideoArtifact.mockResolvedValue(stored);
+    expect(await (await get()).json()).toMatchObject({ renderEnabled: false });
+  });
+
+  it.each([
+    ["no video", null],
+    ["a stored video", { repository: "acme/demo" }],
+  ])("is true for %s when VIDEO_RENDER_ENABLED=1", async (_name, stored) => {
+    vi.stubEnv("VIDEO_RENDER_ENABLED", "1");
+    mocks.readVideoArtifact.mockResolvedValue(stored);
+    expect(await (await get()).json()).toMatchObject({ renderEnabled: true });
+  });
 });
 
 describe("GET /api/video", () => {
@@ -73,97 +88,103 @@ describe("GET /api/video", () => {
     expect(mocks.isVideoLockHeld).toHaveBeenCalledWith("generate:acme/demo");
   });
 
-  it("names a new browser, but never on the cached answer", async () => {
+  it("sets no visitor cookie, on a fresh or a cached answer", async () => {
     const fresh = await get();
-    expect(fresh.headers.get("set-cookie")).toContain("gd_visitor=");
+    expect(fresh.headers.get("set-cookie")).toBeNull();
+    expect(fresh.headers.get("cache-control")).toBe("no-store");
+
     mocks.readVideoArtifact.mockResolvedValue({ repository: "acme/demo" });
     const cached = await get();
-    expect(cached.headers.get("cache-control")).toContain("s-maxage");
     expect(cached.headers.get("set-cookie")).toBeNull();
   });
 
-  it("offers no new video when the live controls cannot be read", async () => {
-    mocks.readAdmissionControls.mockRejectedValue(new Error("redis down"));
-    expect(await (await get()).json()).toMatchObject({
-      canGenerate: false,
-      paused: "limit",
-      generating: false,
-    });
+  it("puts no CDN cache tag or CDN cache header on a stored video's answer", async () => {
+    mocks.readVideoArtifact.mockResolvedValue({ repository: "acme/demo" });
+
+    const response = await get();
+    const names = [...response.headers.keys()].map((name) =>
+      name.toLowerCase(),
+    );
+
+    expect(names).not.toContain("vercel-cache-tag");
+    expect(names).not.toContain("vercel-cdn-cache-control");
+    expect(names).not.toContain("cdn-cache-control");
   });
 
-  it("offers no new video once this visitor's own or connection's budget is spent", async () => {
-    const visitor = "0b6f3a52-6a1f-4a8e-9a3c-2f0d7c1e5b44";
-    const request = new Request(
-      "https://gitdiagram.com/api/video?username=acme&repo=demo",
-      {
-        headers: {
-          cookie: `gd_visitor=${visitor}`,
-          "x-forwarded-for": "203.0.113.9",
-        },
-      },
-    );
-    for (const reason of ["person", "network"] as const) {
-      mocks.videoLimitReached.mockResolvedValueOnce({ reason, limit: 1 });
-      expect(await (await GET(request)).json()).toMatchObject({
-        canGenerate: false,
-        paused: "limit",
-      });
-      expect(mocks.reportHeldBack).toHaveBeenLastCalledWith(
-        expect.any(Request),
-        expect.objectContaining({ reason }),
-      );
+  it("never lets a shared cache keep a stored video's answer", async () => {
+    mocks.readVideoArtifact.mockResolvedValue({ repository: "acme/demo" });
+
+    const cacheControl = (await get()).headers.get("cache-control") ?? "";
+
+    expect(cacheControl).not.toMatch(/\bpublic\b/);
+    expect(cacheControl).not.toContain("s-maxage");
+    expect(cacheControl).toMatch(/private|no-store/);
+  });
+
+  it("offers a new video without a visitor id, a budget read or a device split", async () => {
+    const body = (await (
+      await get({ "x-forwarded-for": "203.0.113.9" })
+    ).json()) as Record<string, unknown>;
+
+    expect(body).toMatchObject({ canGenerate: true, paused: null });
+    expect(body).not.toHaveProperty("anyDevice");
+    expect(mocks.removedDependency).not.toHaveBeenCalled();
+  });
+
+  it("ignores the caller's country: geolocation headers change nothing", async () => {
+    for (const country of ["PK", "US", "IN", "FR"]) {
+      expect(
+        await (await get({ "x-vercel-ip-country": country })).json(),
+      ).toMatchObject({ canGenerate: true, paused: null });
     }
-    expect(mocks.videoLimitReached).toHaveBeenCalledWith(
-      { visitorId: visitor, clientIp: "203.0.113.9" },
-      { priority: false, limited: false },
-    );
   });
 
-  it("reports a paused narrator as the reason when the budgets have room", async () => {
+  it("stays available in production on a phone", async () => {
+    expect(
+      await (
+        await get({
+          "user-agent":
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148",
+        })
+      ).json(),
+    ).toMatchObject({ canGenerate: true, paused: null });
+  });
+
+  it("reports a paused narrator as the reason", async () => {
     mocks.isNarrationAvailable.mockResolvedValue(false);
     expect(await (await get()).json()).toMatchObject({
       canGenerate: false,
       paused: "limit",
     });
-    expect(mocks.reportHeldBack).toHaveBeenCalledWith(
-      expect.any(Request),
-      expect.objectContaining({ reason: "voice" }),
-    );
   });
 
-  it("reports a held-back visitor through the deduplicated notice", async () => {
-    mocks.readAdmissionControls.mockResolvedValue({
-      videoAudience: "priority",
-      videosPaused: false,
-    });
+  // Phase 4 decision (1): the voice-credit check applies to the operator, so
+  // the panel must not offer a video the generate route would refuse.
+  it("reports a paused narrator to the operator too", async () => {
+    mocks.isVideoAdmin.mockResolvedValue(true);
+    mocks.isNarrationAvailable.mockResolvedValue(false);
+
     expect(await (await get()).json()).toMatchObject({
       canGenerate: false,
-      paused: "audience",
-    });
-    expect(mocks.reportHeldBack).toHaveBeenCalledWith(expect.any(Request), {
-      username: "acme",
-      repo: "demo",
-      reason: "place",
-      step: "page",
+      paused: "limit",
     });
   });
 
-  it("holds back a limited country the operator blocked", async () => {
-    mocks.readAdmissionControls.mockResolvedValue({
-      videoAudience: "everyone",
-      videosPaused: false,
-      limitedCountryAccess: "blocked",
-      limitedCountryShare: null,
+  it("offers the operator a new video while the narrator is available", async () => {
+    mocks.isVideoAdmin.mockResolvedValue(true);
+
+    expect(await (await get()).json()).toMatchObject({
+      canGenerate: true,
+      paused: null,
     });
-    expect(
-      await (await get({ "x-vercel-ip-country": "PK" })).json(),
-    ).toMatchObject({ canGenerate: false, paused: "audience" });
-    expect(mocks.reportHeldBack).toHaveBeenCalledWith(
-      expect.any(Request),
-      expect.objectContaining({ reason: "country" }),
-    );
-    expect(
-      await (await get({ "x-vercel-ip-country": "US" })).json(),
-    ).toMatchObject({ canGenerate: true });
+  });
+
+  it("offers no new video when the narrator's state cannot be read", async () => {
+    mocks.isNarrationAvailable.mockRejectedValue(new Error("db down"));
+
+    expect(await (await get()).json()).toMatchObject({
+      canGenerate: false,
+      paused: "limit",
+    });
   });
 });

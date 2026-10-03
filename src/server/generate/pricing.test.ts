@@ -28,9 +28,50 @@ describe("resolvePricingModel", () => {
 
   it("does not substitute unrelated pricing for an unknown provider model", () => {
     expect(resolvePricingModel("anthropic/claude-opus-5")).toBeNull();
-    expect(() =>
+    expect(
       estimateTextTokenCostUsd("anthropic/claude-opus-5", 1_000_000, 1_000_000),
-    ).toThrow("Cost information is unavailable");
+    ).toMatchObject({
+      costUsd: null,
+      pricingModel: "anthropic/claude-opus-5",
+      pricing: null,
+    });
+  });
+
+  it.each(["local/gpt-5.6-terra", "anthropic/gpt-6-luna"])(
+    "does not apply OpenAI prices to a different provider's %s",
+    (model) => {
+      expect(resolvePricingModel(model)).toBeNull();
+      expect(estimateTextTokenCostUsd(model, 1000, 1000).costUsd).toBeNull();
+    },
+  );
+
+  it.each(["gpt-6-luna-preview", "gpt-5.6-terra-custom"])(
+    "does not invent OpenAI pricing for an unlisted %s variant",
+    (model) => {
+      expect(resolvePricingModel(model)).toBeNull();
+      expect(estimateTextTokenCostUsd(model, 1000, 1000)).toMatchObject({
+        costUsd: null,
+        pricingModel: model,
+        pricing: null,
+      });
+    },
+  );
+
+  it("keeps unknown local model costs unavailable while retaining measured usage", () => {
+    const summary = createCostSummary({
+      kind: "actual",
+      model: "lmstudio/local-model",
+      approximate: false,
+      usage: { inputTokens: 120, outputTokens: 30, totalTokens: 150 },
+    });
+
+    expect(summary).toMatchObject({
+      kind: "actual",
+      amountUsd: null,
+      display: "n/a",
+      pricingModel: "lmstudio/local-model",
+      usage: { inputTokens: 120, outputTokens: 30, totalTokens: 150 },
+    });
   });
 });
 
@@ -43,9 +84,9 @@ describe("estimateTextTokenCostUsd", () => {
     );
 
     expect(result.pricingModel).toBe("gpt-5.6-terra");
-    expect(result.pricing.inputPerMillionUsd).toBe(2);
-    expect(result.pricing.outputPerMillionUsd).toBe(12);
-    expect(result.costUsd).toBe(14);
+    expect(result.pricing!.inputPerMillionUsd).toBe(2);
+    expect(result.pricing!.outputPerMillionUsd).toBe(12);
+    expect(result.costUsd!).toBe(14);
   });
 });
 
@@ -93,6 +134,30 @@ describe("createEstimateCostSummary", () => {
 });
 
 describe("mixed-model measured costs", () => {
+  it("does not report a partial dollar total when one stage has unknown pricing", () => {
+    const usage = { inputTokens: 1000, outputTokens: 100, totalTokens: 1100 };
+    const total = combineCostSummaries([
+      createCostSummary({
+        kind: "actual",
+        model: "gpt-5.6-terra",
+        approximate: false,
+        usage,
+      }),
+      createCostSummary({
+        kind: "actual",
+        model: "local/mystery",
+        approximate: false,
+        usage,
+      }),
+    ]);
+
+    expect(total).toMatchObject({
+      amountUsd: null,
+      display: "n/a",
+      usage: { inputTokens: 2000, outputTokens: 200, totalTokens: 2200 },
+    });
+  });
+
   it("applies cache read discounts, cache write rates, and the returned tier", () => {
     const cost = createCostSummary({
       kind: "actual",
@@ -150,11 +215,11 @@ describe("GPT-6 Luna pricing", () => {
     (model) => {
       expect(resolvePricingModel(model)).toBe("gpt-6-luna");
       expect(
-        estimateTextTokenCostUsd(model, 1_000_000, 1_000_000).costUsd,
+        estimateTextTokenCostUsd(model, 1_000_000, 1_000_000).costUsd!,
       ).toBeCloseTo(0.6);
       expect(
         estimateTextTokenCostUsd(model, 1_000_000, 1_000_000, "priority")
-          .costUsd,
+          .costUsd!,
       ).toBeCloseTo(1.2);
     },
   );

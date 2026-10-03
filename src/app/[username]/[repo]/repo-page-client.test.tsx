@@ -15,8 +15,6 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("~/hooks/useDiagram", () => ({
   useDiagram: (...args: unknown[]) => useDiagram(...args),
 }));
-vi.mock("~/hooks/useStarReminder", () => ({ useStarReminder: vi.fn() }));
-vi.mock("~/components/sponsor-slot", () => ({ SponsorSlot: () => null }));
 vi.mock("~/components/mermaid-diagram", () => ({
   default: ({
     chart,

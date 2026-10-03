@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { requireOperator } from "~/server/auth/require-operator";
 
 import {
   githubRepoSchema,
@@ -24,6 +25,9 @@ const querySchema = z.object({
 });
 
 export async function GET(request: Request): Promise<Response> {
+  const denied = await requireOperator(request);
+  if (denied) return denied;
+
   if (!isVideoExplainerEnabled())
     return jsonErrorResponse("Explainer videos are not enabled.", 404);
   const url = new URL(request.url);
@@ -47,7 +51,7 @@ export async function GET(request: Request): Promise<Response> {
       "Content-Type": "audio/mpeg",
       // A clip URL names its video version, so its bytes never change and
       // the CDN and browsers can keep it forever.
-      "Cache-Control": "public, max-age=31536000, s-maxage=31536000, immutable",
+      "Cache-Control": "private, max-age=31536000, immutable",
       "X-Content-Type-Options": "nosniff",
     },
   });

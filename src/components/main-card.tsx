@@ -7,7 +7,6 @@ import { Input } from "~/components/ui/input";
 import { Button } from "~/components/ui/button";
 import { exampleRepos } from "~/lib/exampleRepos";
 import { parseGitHubRepoUrl } from "~/features/diagram/github-url";
-import { SponsorSlot } from "~/components/sponsor-slot";
 
 /** The home page's repository form, with example repositories. */
 export default function MainCard() {
@@ -100,10 +99,6 @@ export default function MainCard() {
               ))}
             </div>
           </div>
-          <SponsorSlot
-            surface="home"
-            className="max-[389px]:mt-7 max-sm:mt-10"
-          />
         </div>
       </form>
 

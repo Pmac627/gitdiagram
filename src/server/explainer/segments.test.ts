@@ -292,7 +292,7 @@ describe("rendering in segments", () => {
     expect(most).toBe(3);
   });
 
-  it("pins every segment request to the running deployment", async () => {
+  it("sends no deployment-pinning header even when a deployment id is set", async () => {
     process.env.VERCEL_DEPLOYMENT_ID = "dpl_123";
     const fetchMock = vi.fn(async () =>
       answer([{ type: "ready", sfx: [] }, done("X")]),
@@ -302,7 +302,11 @@ describe("rendering in segments", () => {
     for (const [, init] of fetchMock.mock.calls as unknown as Array<
       [string, RequestInit]
     >)
-      expect(init.headers).toMatchObject({ "x-deployment-id": "dpl_123" });
+      expect(
+        Object.keys((init.headers ?? {}) as Record<string, string>).map(
+          (name) => name.toLowerCase(),
+        ),
+      ).not.toContain("x-deployment-id");
   });
 
   it("logs how many busy answers a render met", async () => {

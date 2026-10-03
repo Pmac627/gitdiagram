@@ -6,8 +6,8 @@ import { NewBadge } from "~/components/new-badge";
 import { cn } from "~/lib/utils";
 import { VIDEOS_ENABLED } from "~/lib/video-flag";
 
-// The server-rendered parts (the header's star count, which sponsor campaign
-// is scheduled) refresh every five minutes instead of freezing at build time.
+// The server-rendered parts (the header's star count) refresh every five
+// minutes instead of freezing at build time.
 export const revalidate = 300;
 
 export const metadata: Metadata = {

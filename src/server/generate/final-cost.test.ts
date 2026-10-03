@@ -36,6 +36,43 @@ function createEstimate(): GenerationEstimateResult {
 }
 
 describe("createFinalGenerationCostSummary", () => {
+  it("reports unknown-model measured usage without inventing an actual price", () => {
+    const result = createFinalGenerationCostSummary({
+      model: "local/mistral-small",
+      estimate: createEstimate(),
+      actualUsages: [{ inputTokens: 100, outputTokens: 50, totalTokens: 150 }],
+      hasCompleteMeasuredUsage: true,
+      graphAttemptCount: 1,
+    });
+
+    expect(result).toMatchObject({
+      kind: "actual",
+      amountUsd: null,
+      display: "n/a",
+      usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+    });
+  });
+
+  it("keeps an unknown-model retry estimate unavailable while counting retries", () => {
+    const estimate = createEstimate();
+    estimate.costSummary.amountUsd = null as unknown as number;
+    estimate.costSummary.display = "n/a";
+
+    const result = createFinalGenerationCostSummary({
+      model: "local/mistral-small",
+      estimate,
+      actualUsages: [],
+      hasCompleteMeasuredUsage: false,
+      graphAttemptCount: 2,
+    });
+
+    expect(result.amountUsd).toBeNull();
+    expect(result.display).toBe("n/a");
+    expect(result.usage.inputTokens).toBeGreaterThan(
+      estimate.estimatedInputTokens,
+    );
+  });
+
   it("reports complete provider usage as actual", () => {
     const result = createFinalGenerationCostSummary({
       model: "gpt-5.6-terra",

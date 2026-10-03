@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildBrowseHref,
+  buildBrowseSearchParams,
   getBrowsePageFromPreparedIndex,
   getBrowsePageFromRecentIndex,
+  parseBrowseQueryFromSearchParams,
   prepareBrowseIndex,
   type BrowseIndexEntry,
 } from "~/features/browse/catalog";
@@ -37,7 +40,6 @@ describe("prepared browse index", () => {
     });
     const filtered = getBrowsePageFromPreparedIndex(index, {
       q: "VERCEL/",
-      minStars: 1000,
       sort: "recent_asc",
     });
 
@@ -95,13 +97,61 @@ describe("recent browse shard", () => {
       getBrowsePageFromRecentIndex({ entries, total: 3 }, { q: "vercel" }),
     ).toBeNull();
     expect(
-      getBrowsePageFromRecentIndex({ entries, total: 3 }, { minStars: 100 }),
-    ).toBeNull();
-    expect(
       getBrowsePageFromRecentIndex(
         { entries, total: 3 },
         { sort: "stars_desc" },
       ),
     ).toBeNull();
+  });
+
+  it("does not treat a legacy minStars parameter as a filter", () => {
+    const result = getBrowsePageFromRecentIndex({ entries, total: 3 }, {
+      minStars: 100,
+    } as never);
+
+    expect(result).not.toBeNull();
+    expect(result?.items).toHaveLength(3);
+    expect(result).not.toHaveProperty("minStars");
+  });
+});
+
+describe("minimum stars filter removal", () => {
+  it("lists every entry, including null-star ones, despite minStars", () => {
+    const index = prepareBrowseIndex(entries);
+
+    const result = getBrowsePageFromPreparedIndex(index, {
+      minStars: 100,
+    } as never);
+
+    expect(result.items.map((entry) => entry.repo).sort()).toEqual([
+      "demo",
+      "next.js",
+      "swr",
+    ]);
+    expect(result.total).toBe(3);
+    expect(result).not.toHaveProperty("minStars");
+  });
+
+  it("parses a URL with minStars without exposing it", () => {
+    const parsed = parseBrowseQueryFromSearchParams(
+      new URLSearchParams("q=vercel&minStars=100"),
+    );
+
+    expect(parsed).not.toHaveProperty("minStars");
+  });
+
+  it("never emits a minStars parameter", () => {
+    const params = buildBrowseSearchParams({
+      q: "vercel",
+      sort: "stars_desc",
+      minStars: 100,
+      page: 2,
+    } as never);
+
+    expect(params.has("minStars")).toBe(false);
+    expect(params.toString()).toBe("q=vercel&sort=stars_desc&page=2");
+    expect(
+      buildBrowseHref({ q: "", sort: "recent_desc", minStars: 500 } as never),
+    ).toBe("/browse");
   });
 });

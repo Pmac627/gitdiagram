@@ -1,6 +1,7 @@
 import { getGitHubApiHeaders } from "../github-auth";
 import { GitHubRequestError } from "./github-errors";
 
+import { redactLogText } from "~/server/log";
 interface GitHubRepoResponse {
   default_branch?: string;
   private?: boolean;
@@ -160,6 +161,26 @@ function shouldIncludeFile(path: string): boolean {
     .some((segment) => EXCLUDED_DIRECTORY_SEGMENTS.includes(segment));
 }
 
+// The caller PAT behind a header set, so a failed request can scrub it from
+// the log. Keyed by the headers object, which every helper passes along.
+const callerCredentials = new WeakMap<object, string>();
+
+/**
+ * The credential this server attached to its own outgoing GitHub request, so a
+ * failed response that echoes it can be scrubbed from the log. This is the
+ * header the server built (getGitHubApiHeaders), never an inbound request's
+ * Authorization header, which no-bearer-access.test.ts forbids reading.
+ */
+function outgoingCredential(headers: Headers): string | undefined {
+  for (const [name, value] of headers) {
+    if (name.toLowerCase() === "authorization") {
+      return value.trim().split(/\s+/).at(-1);
+    }
+  }
+
+  return undefined;
+}
+
 async function fetchJsonResult<T>(
   url: string,
   headers: HeadersInit,
@@ -213,7 +234,12 @@ async function fetchJsonResult<T>(
         rate_limit_remaining: response.headers.get("x-ratelimit-remaining"),
         rate_limit_reset: response.headers.get("x-ratelimit-reset"),
         retry_after: response.headers.get("retry-after"),
-        body: (await response.text()).slice(0, 500),
+        body: redactLogText(await response.text(), [
+          outgoingCredential(requestHeaders),
+          typeof headers === "object"
+            ? callerCredentials.get(headers)
+            : undefined,
+        ]),
       }),
     );
     throw new GitHubRequestError(
@@ -540,6 +566,11 @@ async function fetchGithubData(
 ): Promise<GithubData> {
   const hasCallerGithubPat = Boolean(githubPat?.trim());
   const headers = await getGitHubApiHeaders({ githubPat });
+
+  if (githubPat?.trim() && typeof headers === "object") {
+    callerCredentials.set(headers, githubPat);
+  }
+
   const metadata = await getRepoMetadata(username, repo, headers, signal);
   const { defaultBranch, isPrivate } = metadata;
 

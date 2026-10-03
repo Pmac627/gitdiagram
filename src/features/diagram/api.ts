@@ -76,7 +76,7 @@ function sendGenerationCancellation(
     headers: {
       "Content-Type": "application/json",
     },
-    credentials: "omit",
+    credentials: "same-origin",
     body: JSON.stringify({
       session_id: sessionId,
       cancel_token: cancelToken,

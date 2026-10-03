@@ -1,11 +1,14 @@
 import { getCachedBrowsePage } from "~/server/browse-index-cache";
+import { requireOperator } from "~/server/auth/require-operator";
 
 export async function GET(request: Request) {
+  const denied = await requireOperator(request);
+  if (denied) return denied;
+
   const { searchParams } = new URL(request.url);
   const result = await getCachedBrowsePage({
     q: searchParams.get("q"),
     sort: searchParams.get("sort"),
-    minStars: searchParams.get("minStars"),
     page: searchParams.get("page"),
   });
 
@@ -23,10 +26,7 @@ export async function GET(request: Request) {
 
   return Response.json(result, {
     headers: {
-      "Cache-Control": "public, max-age=60",
-      "CDN-Cache-Control": "public, max-age=300, stale-while-revalidate=86400",
-      "Vercel-CDN-Cache-Control":
-        "public, max-age=300, stale-while-revalidate=86400",
+      "Cache-Control": "private, max-age=60",
     },
   });
 }

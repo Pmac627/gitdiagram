@@ -149,7 +149,7 @@ describe("analysis model routing", () => {
   it("preserves custom model and BYOK choices", () => {
     for (const params of [
       { provider: "openai" as const, model: "gpt-5.4" },
-      { provider: "openrouter" as const, model: "openai/gpt-5.6-luna" },
+      { provider: "gemini" as const, model: "gemini-2.5-flash" },
       {
         provider: "openai" as const,
         model: "gpt-5.6-luna",
@@ -158,5 +158,38 @@ describe("analysis model routing", () => {
     ]) {
       expect(selectAnalysisModel(params)).toBe(params.model);
     }
+  });
+});
+
+describe("secret redaction in the README", () => {
+  const AWS_KEY = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
+
+  it("redacts secrets in the README and reports how many", () => {
+    const data = repository(["src/main.ts"]);
+    data.readme = `# Demo\n\nSet \`AWS_ACCESS_KEY_ID=${AWS_KEY}\` first.\n`;
+
+    const context = prepareRepositoryContext(data);
+
+    expect(context.readme).not.toContain(AWS_KEY);
+    expect(context.readme).toContain("[REDACTED:aws-access-key]");
+    expect(context.readme).toContain("# Demo");
+    expect(context.redactedSecretCount).toBe(1);
+  });
+
+  it("scans the text that is kept when an oversized README is cut", () => {
+    const data = repository(["src/main.ts"]);
+    data.readme = `${AWS_KEY}\n${"word ".repeat(200_000)}`;
+
+    const context = prepareRepositoryContext(data);
+
+    expect(context.readme).not.toContain(AWS_KEY);
+    expect(context.redactedSecretCount).toBe(1);
+  });
+
+  it("reports zero for a clean README", () => {
+    const context = prepareRepositoryContext(repository(["src/main.ts"]));
+
+    expect(context.readme).toBe("README");
+    expect(context.redactedSecretCount).toBe(0);
   });
 });

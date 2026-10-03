@@ -35,14 +35,14 @@ async function loadVideoPage(
 ): Promise<VideoPage> {
   const response = await fetch(
     key ? `/api/video/catalog?${key}` : "/api/video/catalog",
-    { credentials: "omit", signal },
+    { credentials: "same-origin", signal },
   );
   if (!response.ok) throw new Error("The videos could not be loaded.");
   return (await response.json()) as VideoPage;
 }
 
 /**
- * The /videos gallery with the same search, sort and star filter as /browse.
+ * The /videos gallery with the same search and sort as /browse.
  * The page arrives with its first page of videos; every other page is asked
  * for from the server, so the browser never holds the whole catalog.
  */
@@ -129,10 +129,6 @@ export function VideoCatalog({ initial }: { initial: VideoPage }) {
   return (
     <div ref={topRef} aria-busy={loading} className="space-y-4 sm:space-y-6">
       <BrowseCatalogControls
-        minStars={query.minStars}
-        onMinStarsChange={(value) =>
-          updateQuery({ minStars: value, page: 1 }, "replace")
-        }
         onSearchChange={(value) =>
           updateQuery({ page: 1, q: value }, "replace")
         }
@@ -164,7 +160,7 @@ export function VideoCatalog({ initial }: { initial: VideoPage }) {
             No videos match these filters
           </h2>
           <p className="mt-4 text-base text-[hsl(var(--neo-soft-text))] dark:text-neutral-300">
-            Try a broader search or lower the minimum star filter.
+            Try a broader search.
           </p>
         </div>
       ) : (

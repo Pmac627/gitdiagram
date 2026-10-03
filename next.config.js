@@ -1,23 +1,12 @@
 const isDevelopment = process.env.NODE_ENV !== "production";
 
-// The live-presence worker (workers/presence): every tab holds one socket to it.
-const presenceOrigin = (() => {
-  try {
-    const url = new URL(process.env.NEXT_PUBLIC_PRESENCE_URL ?? "");
-    return /^wss?:$/.test(url.protocol) ? ` ${url.origin}` : "";
-  } catch {
-    return "";
-  }
-})();
-
 // Defence in depth behind the diagram sanitization pipeline: if a DOMPurify
 // bypass ever lands, `connect-src 'self'` still denies the injected code any
 // way to phone home, and object/base/form rules deny the usual pivots.
 //
 // `script-src` keeps 'unsafe-inline' because Next.js emits inline bootstrap
 // scripts; tightening it further requires nonces, which need a middleware that
-// can stamp each response. PostHog and its recorder extensions are same-origin
-// via the /phx9a rewrite, so they need no CSP exception.
+// can stamp each response.
 const contentSecurityPolicy = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline'${isDevelopment ? " 'unsafe-eval'" : ""}`,
@@ -26,7 +15,7 @@ const contentSecurityPolicy = [
   // blob: and data: carry the rendered SVG through the PNG export path.
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
-  `connect-src 'self'${presenceOrigin}`,
+  "connect-src 'self'",
   "worker-src 'self' blob:",
   // Same-origin frames only: the explainer video stage (/video-engine).
   "frame-src 'self'",
@@ -54,46 +43,34 @@ const videoStagePolicy = [
   "frame-ancestors 'self'",
 ].join("; ");
 
-// Explainer videos are rendered to MP4 in headless Chromium with ffmpeg. Both
-// ship native binaries that must stay out of the bundle and be traced into the
-// functions that launch them. The render route only mixes and joins with
-// ffmpeg (segments and posters render through /api/video/render/segment), so
-// it and the generate route (which asks the segment route for its poster)
-// leave Chromium's ~60 MB out; their code (ffmpeg.ts) never imports the
+// MP4 renders use ffmpeg-static, a native binary that must stay out of the
+// bundle and be traced into the functions that run it (the Chromium that draws
+// the frames is the host's own, VIDEO_RENDER_CHROME_PATH). The glob also
+// matches ffmpeg.exe, the Windows binary. The render and generate routes only
+// mix and join with ffmpeg; their code (ffmpeg.ts) never imports the
 // Chromium half (render.ts), and scripts/check-video-render-tracing.mjs keeps
-// it that way. All of bin/ is needed even with graphics mode off:
-// @sparticuz/chromium unpacks swiftshader.tar.br on every launch regardless.
-const chromiumFiles = ["./node_modules/@sparticuz/chromium/bin/**"];
-const ffmpegFiles = ["./node_modules/ffmpeg-static/ffmpeg"];
-const videoRenderFiles = [...chromiumFiles, ...ffmpegFiles];
+// it that way.
+const ffmpegFiles = ["./node_modules/ffmpeg-static/ffmpeg*"];
 
 /** @type {import("next").NextConfig} */
 const config = {
   reactStrictMode: false,
-  serverExternalPackages: [
-    "@sparticuz/chromium",
-    "puppeteer-core",
-    "ffmpeg-static",
-  ],
+  serverExternalPackages: ["puppeteer-core", "ffmpeg-static"],
   outputFileTracingIncludes: {
     "/api/video/render": ffmpegFiles,
-    "/api/video/render/segment": videoRenderFiles,
+    "/api/video/render/segment": ffmpegFiles,
     "/api/video/generate": ffmpegFiles,
   },
+  // A dynamic file path in a server module makes Turbopack trace that
+  // module's whole folder (tests included). The bundles already hold the code.
   outputFileTracingExcludes: {
-    "/api/video/render": chromiumFiles,
-    "/api/video/generate": chromiumFiles,
+    "/**": ["./src/**"],
   },
   allowedDevOrigins: ["127.0.0.1"],
-  ...(process.env.RAILWAY_DOCKER_BUILD === "1" ? { output: "standalone" } : {}),
-  transpilePackages: ["@aws-sdk/client-s3"],
+  // The IIS package runs the self-contained server.js from .next/standalone.
+  output: "standalone",
   async redirects() {
     return [
-      {
-        source: "/sponsor",
-        destination: "/advertise",
-        permanent: true,
-      },
       // The video gallery moved from /watch to /videos.
       {
         source: "/:path(watch|video)",
@@ -114,33 +91,10 @@ const config = {
       },
     ];
   },
-  async rewrites() {
-    return [
-      {
-        source: "/phx9a/static/:path*",
-        destination: "https://us-assets.i.posthog.com/static/:path*",
-      },
-      {
-        source: "/phx9a/:path*",
-        destination: "https://us.i.posthog.com/:path*",
-      },
-    ];
-  },
   async headers() {
     return [
       {
         source: "/favicon.ico",
-        headers: [
-          {
-            key: "Cache-Control",
-            value: "public, max-age=86400, stale-while-revalidate=604800",
-          },
-        ],
-      },
-      // Sponsor logos sit in the first screen, so skip the revalidation round
-      // trip on repeat visits. Give a changed logo a new file name.
-      {
-        source: "/sponsors/:path*",
         headers: [
           {
             key: "Cache-Control",
@@ -184,8 +138,6 @@ const config = {
       },
     ];
   },
-  // This is required to support PostHog trailing slash API requests
-  skipTrailingSlashRedirect: true,
 };
 
 export default config;

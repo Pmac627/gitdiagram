@@ -1,9 +1,6 @@
 import { toTaggedMessage } from "~/server/generate/format";
-import {
-  countInputTokens,
-  estimateTokens,
-  type ReasoningEffort,
-} from "~/server/generate/openai";
+import type { GenerationProvider, ReasoningEffort } from "~/server/ai/provider";
+import { estimateTokens } from "~/server/generate/token-estimate";
 import {
   EXPLANATION_REASONING_EFFORT,
   getArchitectureReasoningEffort,
@@ -28,10 +25,10 @@ import {
 
 interface CountPromptInputTokensParams {
   provider: AIProvider;
+  generationProvider?: GenerationProvider;
   model: string;
   systemPrompt: string;
   userPrompt: string;
-  apiKey?: string;
   reasoningEffort?: ReasoningEffort;
   preferExactInputTokenCount?: boolean;
   signal?: AbortSignal;
@@ -43,6 +40,10 @@ interface CountPromptInputTokensResult {
   usedFallback: boolean;
 }
 
+/**
+ * Report the estimated usage and prices for a diagram run.
+ * @see docs/flows/diagram-generation.md
+ */
 export interface GenerationEstimateResult {
   costSummary: ReturnType<typeof createEstimateCostSummary>;
   estimatedInputTokens: number;
@@ -58,10 +59,10 @@ export interface GenerationEstimateResult {
 
 async function countPromptInputTokens({
   provider,
+  generationProvider,
   model,
   systemPrompt,
   userPrompt,
-  apiKey,
   reasoningEffort,
   preferExactInputTokenCount = true,
   signal,
@@ -69,7 +70,11 @@ async function countPromptInputTokens({
 }: CountPromptInputTokensParams): Promise<CountPromptInputTokensResult> {
   signal?.throwIfAborted();
 
-  if (!preferExactInputTokenCount || !supportsExactInputTokenCount(provider)) {
+  if (
+    !preferExactInputTokenCount ||
+    !generationProvider?.countInputTokens ||
+    !supportsExactInputTokenCount(provider)
+  ) {
     return {
       inputTokens: estimateTokens(`${systemPrompt}\n${userPrompt}`),
       usedFallback: true,
@@ -77,12 +82,10 @@ async function countPromptInputTokens({
   }
 
   try {
-    const inputTokens = await countInputTokens({
-      provider,
+    const inputTokens = await generationProvider.countInputTokens({
       model,
       systemPrompt,
       userPrompt,
-      apiKey,
       reasoningEffort,
       signal,
       clientRequestId,
@@ -105,8 +108,13 @@ async function countPromptInputTokens({
   }
 }
 
+/**
+ * Estimate generation usage with the selected provider's token counter.
+ * @see docs/flows/diagram-generation.md
+ */
 export async function estimateGenerationCost(params: {
   provider: AIProvider;
+  generationProvider?: GenerationProvider;
   model: string;
   analysisModel?: string;
   sourceFiles?: string;
@@ -117,7 +125,6 @@ export async function estimateGenerationCost(params: {
   repo: string;
   apiKey?: string;
   preferExactInputTokenCount?: boolean;
-  includeGraphRepairInputTokens?: boolean;
   signal?: AbortSignal;
   clientRequestId?: string;
 }): Promise<GenerationEstimateResult> {
@@ -135,72 +142,46 @@ export async function estimateGenerationCost(params: {
   const graphPromptWithoutExplanation = toTaggedMessage({
     explanation: "",
   });
-  const graphRepairPromptWithoutExplanation = toTaggedMessage({
-    explanation: "",
-    file_tree: params.fileTree,
-    previous_graph: "",
-    validation_feedback: "",
-  });
 
-  const [explanationCount, graphStaticCount, graphRepairStaticCount] =
-    await Promise.all([
-      countPromptInputTokens({
-        provider: params.provider,
-        model: params.analysisModel ?? params.model,
-        systemPrompt: singlePass
-          ? SYSTEM_ARCHITECTURE_PROMPT
-          : SYSTEM_FIRST_PROMPT,
-        userPrompt: explanationPrompt,
-        apiKey: params.apiKey,
-        reasoningEffort: singlePass
-          ? getArchitectureReasoningEffort(params.analysisModel ?? params.model)
-          : EXPLANATION_REASONING_EFFORT,
-        preferExactInputTokenCount: params.preferExactInputTokenCount,
-        signal: params.signal,
-        clientRequestId: params.clientRequestId
-          ? `${params.clientRequestId}:explanation`
-          : undefined,
-      }),
-      countPromptInputTokens({
-        provider: params.provider,
-        model: params.model,
-        systemPrompt: SYSTEM_GRAPH_PROMPT,
-        userPrompt: graphPromptWithoutExplanation,
-        apiKey: params.apiKey,
-        reasoningEffort: GRAPH_REASONING_EFFORT,
-        preferExactInputTokenCount: params.preferExactInputTokenCount,
-        signal: params.signal,
-        clientRequestId: params.clientRequestId
-          ? `${params.clientRequestId}:graph`
-          : undefined,
-      }),
-      params.includeGraphRepairInputTokens
-        ? countPromptInputTokens({
-            provider: params.provider,
-            model: params.model,
-            systemPrompt: SYSTEM_GRAPH_PROMPT,
-            userPrompt: graphRepairPromptWithoutExplanation,
-            apiKey: params.apiKey,
-            reasoningEffort: GRAPH_REASONING_EFFORT,
-            preferExactInputTokenCount: params.preferExactInputTokenCount,
-            signal: params.signal,
-            clientRequestId: params.clientRequestId
-              ? `${params.clientRequestId}:graph-repair`
-              : undefined,
-          })
-        : Promise.resolve(null),
-    ]);
+  const [explanationCount, graphStaticCount] = await Promise.all([
+    countPromptInputTokens({
+      provider: params.provider,
+      generationProvider: params.generationProvider,
+      model: params.analysisModel ?? params.model,
+      systemPrompt: singlePass
+        ? SYSTEM_ARCHITECTURE_PROMPT
+        : SYSTEM_FIRST_PROMPT,
+      userPrompt: explanationPrompt,
+      reasoningEffort: singlePass
+        ? getArchitectureReasoningEffort(params.analysisModel ?? params.model)
+        : EXPLANATION_REASONING_EFFORT,
+      preferExactInputTokenCount: params.preferExactInputTokenCount,
+      signal: params.signal,
+      clientRequestId: params.clientRequestId
+        ? `${params.clientRequestId}:explanation`
+        : undefined,
+    }),
+    countPromptInputTokens({
+      provider: params.provider,
+      generationProvider: params.generationProvider,
+      model: params.model,
+      systemPrompt: SYSTEM_GRAPH_PROMPT,
+      userPrompt: graphPromptWithoutExplanation,
+      reasoningEffort: GRAPH_REASONING_EFFORT,
+      preferExactInputTokenCount: params.preferExactInputTokenCount,
+      signal: params.signal,
+      clientRequestId: params.clientRequestId
+        ? `${params.clientRequestId}:graph`
+        : undefined,
+    }),
+  ]);
 
   const noteParts = [
     singlePass
       ? "Estimate assumes one architecture request and the estimated output usage; repairs and actual usage may cost more."
       : "Estimate assumes one graph-planning attempt and the estimated output usage; actual usage may be higher.",
   ];
-  if (
-    explanationCount.usedFallback ||
-    graphStaticCount.usedFallback ||
-    graphRepairStaticCount?.usedFallback
-  ) {
+  if (explanationCount.usedFallback || graphStaticCount.usedFallback) {
     noteParts.push(
       "Some input tokens were approximated with a conservative local fallback.",
     );
@@ -208,6 +189,7 @@ export async function estimateGenerationCost(params: {
 
   const costSummary = createEstimateCostSummary({
     model: params.model,
+    provider: params.provider,
     analysisModel: params.analysisModel,
     analysisServiceTier,
     graphServiceTier,
@@ -224,6 +206,7 @@ export async function estimateGenerationCost(params: {
     costSummary.usage.inputTokens,
     costSummary.usage.outputTokens,
     graphServiceTier,
+    params.provider,
   );
 
   return {
@@ -238,10 +221,12 @@ export async function estimateGenerationCost(params: {
       0,
       0,
       analysisServiceTier,
+      params.provider,
     ).pricing,
     explanationInputTokens:
       explanationCount.inputTokens + (params.sourceTokenReserve ?? 0),
     graphStaticInputTokens: graphStaticCount.inputTokens,
-    graphRepairStaticInputTokens: graphRepairStaticCount?.inputTokens ?? null,
+    // Repairs are not counted up front, so there is no static repair estimate.
+    graphRepairStaticInputTokens: null,
   };
 }

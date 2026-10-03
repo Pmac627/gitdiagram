@@ -8,7 +8,6 @@ interface BrowseCatalogFilterState {
   page: number;
   q: string;
   sort: BrowseSort;
-  minStars: number;
 }
 
 export type HoverPreviewStatus = "idle" | "loading" | "ready" | "error";

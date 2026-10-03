@@ -3,9 +3,8 @@
 import { useId, useState, type ReactNode } from "react";
 import { Check, Copy, ExternalLink } from "lucide-react";
 
-import type { CredentialKind } from "~/features/credentials/api";
+import type { AIProvider, CredentialKind } from "~/features/credentials/api";
 import { useCredentialSetting } from "~/hooks/use-credential-setting";
-import { GITHUB_REPO_URL } from "~/lib/site";
 
 import controls from "./generation/workspace.module.css";
 import {
@@ -34,19 +33,40 @@ const CREDENTIAL_LABELS = {
   },
 } as const;
 
+/** The provider state a dialog can show its copy for. */
+export interface ProviderContext {
+  apiKeyProvider: AIProvider | null;
+  configuredProvider: AIProvider | null;
+  isConfigured: boolean;
+}
+
+interface CredentialSetup {
+  instructions: ReactNode;
+  /** Omit when the provider has no key page to open. */
+  url?: string;
+  linkLabel: string;
+  aiPrompt: string;
+}
+
+type ProviderAware<T> = T | ((context: ProviderContext) => T);
+
+function resolveCopy<T>(value: ProviderAware<T>, context: ProviderContext): T {
+  return typeof value === "function"
+    ? (value as (context: ProviderContext) => T)(context)
+    : value;
+}
+
 interface CredentialDialogProps {
   credential: CredentialKind;
   isOpen: boolean;
   onClose: () => void;
   onSaved?: () => void | Promise<void>;
-  title: string;
+  title: ProviderAware<string>;
   description: string;
-  setup: {
-    instructions: ReactNode;
-    url: string;
-    linkLabel: string;
-    aiPrompt: string;
-  };
+  inputLabel?: ProviderAware<string>;
+  setup: ProviderAware<CredentialSetup>;
+  /** Shown above the hint, for example when a saved key does not apply. */
+  notice?: (context: ProviderContext) => ReactNode;
   dataUsage: ReactNode;
 }
 
@@ -57,14 +77,18 @@ export function CredentialDialog({
   onSaved,
   title,
   description,
-  setup,
+  inputLabel,
+  setup: setupProp,
+  notice,
   dataUsage,
 }: CredentialDialogProps) {
   const inputId = useId();
   const hintId = useId();
   const labels = CREDENTIAL_LABELS[credential];
   const {
+    apiKeyProvider,
     clear,
+    configuredProvider,
     error,
     isConfigured,
     isPending,
@@ -73,6 +97,16 @@ export function CredentialDialog({
     setValue,
     value,
   } = useCredentialSetting({ credential, isOpen });
+  const context: ProviderContext = {
+    apiKeyProvider,
+    configuredProvider,
+    isConfigured,
+  };
+  const setup = resolveCopy(setupProp, context);
+  const resolvedTitle = resolveCopy(title, context);
+  const resolvedInputLabel = inputLabel
+    ? resolveCopy(inputLabel, context)
+    : labels.inputLabel;
   const errors = {
     load: `Could not load the saved-${labels.noun} status.`,
     save: `Could not save the ${labels.name}. Please try again.`,
@@ -108,7 +142,9 @@ export function CredentialDialog({
         className={`neo-panel ${controls.controlsTheme} max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] overflow-y-auto rounded-lg p-5 sm:max-w-md sm:p-6`}
       >
         <DialogHeader className="text-left">
-          <DialogTitle className="pr-6 text-xl font-bold">{title}</DialogTitle>
+          <DialogTitle className="pr-6 text-xl font-bold">
+            {resolvedTitle}
+          </DialogTitle>
           <DialogDescription className="text-sm text-neutral-700 dark:text-neutral-300">
             {description}
           </DialogDescription>
@@ -119,15 +155,17 @@ export function CredentialDialog({
             <p className="text-sm text-neutral-700 dark:text-neutral-300">
               {setup.instructions}
             </p>
-            <a
-              href={setup.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={`${controls.actionButton} ${controls.primary} w-full`}
-            >
-              {setup.linkLabel}
-              <ExternalLink className="h-4 w-4" aria-hidden="true" />
-            </a>
+            {setup.url && (
+              <a
+                href={setup.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`${controls.actionButton} ${controls.primary} w-full`}
+              >
+                {setup.linkLabel}
+                <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              </a>
+            )}
             <CopySetupPrompt prompt={setup.aiPrompt} />
           </div>
           <div className="space-y-2">
@@ -137,7 +175,7 @@ export function CredentialDialog({
             <Input
               id={inputId}
               type="password"
-              aria-label={labels.inputLabel}
+              aria-label={resolvedInputLabel}
               aria-describedby={hintId}
               autoComplete="off"
               autoCapitalize="none"
@@ -153,6 +191,7 @@ export function CredentialDialog({
               className="ph-no-capture neo-input h-11 rounded-md px-3 py-2 text-base placeholder:font-normal placeholder:text-gray-600 dark:placeholder:text-neutral-400"
               required
             />
+            {notice?.(context)}
             <p
               id={hintId}
               className="pt-1 text-xs text-neutral-700 dark:text-neutral-300"
@@ -166,18 +205,7 @@ export function CredentialDialog({
             <summary className="neo-link w-fit cursor-pointer font-medium focus-visible:outline-2 focus-visible:outline-offset-4">
               How your data is used
             </summary>
-            <p className="mt-2 leading-relaxed">
-              {dataUsage} You can also{" "}
-              <a
-                href={GITHUB_REPO_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="neo-link underline"
-              >
-                self-host
-              </a>
-              .
-            </p>
+            <p className="mt-2 leading-relaxed">{dataUsage}</p>
           </details>
           {error && (
             <p

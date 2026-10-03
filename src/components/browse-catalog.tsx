@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
+  buildBrowseSearchParams,
   normalizeBrowseQuery,
   parseBrowseQueryFromSearchParams,
 } from "~/features/browse/catalog";
@@ -62,7 +63,7 @@ export function BrowseCatalog({
     result,
     showSlowIndicator: showSlowResultsIndicator,
   } = loadState;
-  const { q: searchInput, sort, minStars, page } = query;
+  const { q: searchInput, sort, page } = query;
   const activeRequestId = useRef(0);
   const settledSearchRef = useRef(normalizedInitialQuery.q);
   const loadedQueryKeyRef = useRef<string | null>(
@@ -87,6 +88,12 @@ export function BrowseCatalog({
     );
 
     if (window.location.search) {
+      const canonicalSearch = buildBrowseSearchParams(urlState).toString();
+
+      if (canonicalSearch !== window.location.search.slice(1)) {
+        syncBrowseUrl(urlState, "replace");
+      }
+
       setQuery(urlState);
       setIsQueryReady(true);
       return;
@@ -136,7 +143,6 @@ export function BrowseCatalog({
         page,
         q: searchInput,
         sort,
-        minStars,
       };
       const queryKey = getBrowsePageUrl(requestQuery);
 
@@ -213,7 +219,7 @@ export function BrowseCatalog({
       }
       abortController.abort();
     };
-  }, [isQueryReady, minStars, page, searchInput, sort]);
+  }, [isQueryReady, page, searchInput, sort]);
 
   useEffect(() => {
     const handlePopState = () => {
@@ -256,10 +262,6 @@ export function BrowseCatalog({
     updateQuery({ page: 1, sort: value }, "replace");
   };
 
-  const handleMinStarsChange = (value: number) => {
-    updateQuery({ minStars: value, page: 1 }, "replace");
-  };
-
   const handlePageChange = (nextPage: number) => {
     updateQuery({ page: nextPage }, "push");
   };
@@ -274,8 +276,7 @@ export function BrowseCatalog({
           Browse index unavailable
         </h2>
         <p className="mt-4 max-w-3xl text-base text-[hsl(var(--neo-soft-text))] dark:text-neutral-300">
-          {loadError ??
-            "This page reads only the hosted browse index. The index is currently unavailable in storage."}
+          {loadError ?? "The browse list could not be read. Try again shortly."}
         </p>
       </div>
     );
@@ -284,8 +285,6 @@ export function BrowseCatalog({
   if (result === null) {
     return (
       <BrowseCatalogLoadingState
-        minStars={minStars}
-        onMinStarsChange={handleMinStarsChange}
         onSearchChange={handleSearchChange}
         onSortChange={handleSortChange}
         searchInput={searchInput}
@@ -297,8 +296,6 @@ export function BrowseCatalog({
   return (
     <div className="space-y-4 sm:space-y-6">
       <BrowseCatalogControls
-        minStars={minStars}
-        onMinStarsChange={handleMinStarsChange}
         onSearchChange={handleSearchChange}
         onSortChange={handleSortChange}
         searchInput={searchInput}
@@ -320,7 +317,7 @@ export function BrowseCatalog({
             No diagrams match these filters
           </h2>
           <p className="mt-4 text-base text-[hsl(var(--neo-soft-text))] dark:text-neutral-300">
-            Try a broader search or lower the minimum star filter.
+            Try a broader search.
           </p>
         </div>
       ) : (

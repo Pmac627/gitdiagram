@@ -1,28 +1,20 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CSPostHogProvider } from "~/app/providers";
+import { AppProviders } from "~/app/providers";
 
 const mocks = vi.hoisted(() => ({
-  captureAnalyticsEvent: vi.fn(),
   migrateLegacyCredentialStorage: vi.fn(),
 }));
 
-vi.mock("next/navigation", () => ({
-  usePathname: vi.fn(() => "/browse"),
-  useSearchParams: vi.fn(() => new URLSearchParams("q=react")),
-}));
 vi.mock("next-themes", () => ({
   ThemeProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 vi.mock("~/features/credentials/api", () => ({
   migrateLegacyCredentialStorage: mocks.migrateLegacyCredentialStorage,
 }));
-vi.mock("~/lib/analytics-client", () => ({
-  captureAnalyticsEvent: mocks.captureAnalyticsEvent,
-}));
 
-describe("CSPostHogProvider credential migration gate", () => {
+describe("AppProviders credential migration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -31,7 +23,7 @@ describe("CSPostHogProvider credential migration gate", () => {
     cleanup();
   });
 
-  it("renders the app immediately but starts analytics only after migration", async () => {
+  it("renders the app immediately and starts the migration once", async () => {
     let completeMigration!: (complete: boolean) => void;
     mocks.migrateLegacyCredentialStorage.mockReturnValue(
       new Promise<boolean>((resolve) => {
@@ -40,38 +32,35 @@ describe("CSPostHogProvider credential migration gate", () => {
     );
 
     render(
-      <CSPostHogProvider>
+      <AppProviders>
         <main>Application content</main>
-      </CSPostHogProvider>,
+      </AppProviders>,
     );
 
     expect(screen.getByText("Application content")).toBeInTheDocument();
     expect(mocks.migrateLegacyCredentialStorage).toHaveBeenCalledOnce();
-    expect(mocks.captureAnalyticsEvent).not.toHaveBeenCalled();
 
     completeMigration(true);
 
-    await waitFor(() =>
-      expect(mocks.captureAnalyticsEvent).toHaveBeenCalledOnce(),
-    );
-    expect(mocks.captureAnalyticsEvent).toHaveBeenCalledWith("$pageview", {
-      $current_url: "http://localhost:3000/browse?q=react",
-    });
+    await waitFor(() => expect(screen.getByText("Application content")));
+    expect(mocks.migrateLegacyCredentialStorage).toHaveBeenCalledOnce();
   });
 
-  it("keeps analytics disabled after a failed migration", async () => {
-    mocks.migrateLegacyCredentialStorage.mockResolvedValue(false);
+  it("keeps rendering after a failed migration", async () => {
+    mocks.migrateLegacyCredentialStorage.mockRejectedValue(
+      new Error("storage unavailable"),
+    );
 
     render(
-      <CSPostHogProvider>
+      <AppProviders>
         <main>Application content</main>
-      </CSPostHogProvider>,
+      </AppProviders>,
     );
 
     expect(screen.getByText("Application content")).toBeInTheDocument();
     await waitFor(() =>
       expect(mocks.migrateLegacyCredentialStorage).toHaveBeenCalledOnce(),
     );
-    expect(mocks.captureAnalyticsEvent).not.toHaveBeenCalled();
+    expect(screen.getByText("Application content")).toBeInTheDocument();
   });
 });

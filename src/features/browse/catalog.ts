@@ -1,5 +1,4 @@
 export const BROWSE_PAGE_SIZE = 20;
-const MIN_STAR_FILTER_VALUES = [0, 10, 100, 1000] as const;
 const BROWSE_SORTS = [
   "recent_desc",
   "recent_asc",
@@ -20,7 +19,6 @@ export interface BrowseIndexEntry {
 export interface BrowseQuery {
   q?: string | null;
   sort?: string | null;
-  minStars?: string | number | null;
   page?: string | number | null;
 }
 
@@ -34,7 +32,6 @@ export interface BrowsePageResult<
   totalPages: number;
   sort: BrowseSort;
   q: string;
-  minStars: number;
 }
 
 export interface RecentBrowseIndex {
@@ -46,7 +43,6 @@ interface NormalizedBrowseQuery {
   page: number;
   sort: BrowseSort;
   q: string;
-  minStars: number;
 }
 
 interface PreparedBrowseEntry<T extends BrowseIndexEntry = BrowseIndexEntry> {
@@ -96,19 +92,6 @@ function parseBrowseSort(sort: string | null | undefined): BrowseSort {
     : "recent_desc";
 }
 
-function parseMinStars(minStars: string | number | null | undefined): number {
-  const numericValue =
-    typeof minStars === "number"
-      ? minStars
-      : Number.parseInt(minStars ?? "0", 10);
-
-  return MIN_STAR_FILTER_VALUES.includes(
-    numericValue as (typeof MIN_STAR_FILTER_VALUES)[number],
-  )
-    ? numericValue
-    : 0;
-}
-
 function parsePageNumber(page: string | number | null | undefined): number {
   const numericPage =
     typeof page === "number" ? page : Number.parseInt(page ?? "1", 10);
@@ -126,7 +109,6 @@ export function normalizeBrowseQuery(
   return {
     sort: parseBrowseSort(query.sort),
     q: (query.q ?? "").trim(),
-    minStars: parseMinStars(query.minStars),
     page: parsePageNumber(query.page),
   };
 }
@@ -201,22 +183,11 @@ export function getBrowsePageFromPreparedIndex<T extends BrowseIndexEntry>(
   query: BrowseQuery,
   pageSize = BROWSE_PAGE_SIZE,
 ): BrowsePageResult<T> {
-  const {
-    sort,
-    q,
-    minStars,
-    page: requestedPage,
-  } = normalizeBrowseQuery(query);
+  const { sort, q, page: requestedPage } = normalizeBrowseQuery(query);
   const normalizedQuery = q.toLowerCase();
   const filteredEntries = getSortedPreparedEntries(index, sort).filter(
-    ({ entry, repoKey }) => {
-      const matchesQuery = normalizedQuery
-        ? repoKey.includes(normalizedQuery)
-        : true;
-      const matchesStarFilter =
-        minStars === 0 ? true : (entry.stargazerCount ?? -1) >= minStars;
-      return matchesQuery && matchesStarFilter;
-    },
+    ({ repoKey }) =>
+      normalizedQuery ? repoKey.includes(normalizedQuery) : true,
   );
 
   const total = filteredEntries.length;
@@ -234,7 +205,6 @@ export function getBrowsePageFromPreparedIndex<T extends BrowseIndexEntry>(
     totalPages,
     sort,
     q,
-    minStars,
   };
 }
 
@@ -255,11 +225,7 @@ export function getBrowsePageFromRecentIndex(
   query: BrowseQuery,
 ): BrowsePageResult | null {
   const normalized = normalizeBrowseQuery(query);
-  if (
-    normalized.q ||
-    normalized.sort !== "recent_desc" ||
-    normalized.minStars !== 0
-  ) {
+  if (normalized.q || normalized.sort !== "recent_desc") {
     return null;
   }
 
@@ -279,7 +245,6 @@ export function getBrowsePageFromRecentIndex(
     totalPages,
     sort: normalized.sort,
     q: normalized.q,
-    minStars: normalized.minStars,
   };
 }
 
@@ -289,13 +254,12 @@ export function parseBrowseQueryFromSearchParams(
   return normalizeBrowseQuery({
     q: searchParams.get("q"),
     sort: searchParams.get("sort"),
-    minStars: searchParams.get("minStars"),
     page: searchParams.get("page"),
   });
 }
 
 export function buildBrowseSearchParams(
-  query: Pick<BrowsePageResult, "q" | "sort" | "minStars"> & {
+  query: Pick<BrowsePageResult, "q" | "sort"> & {
     page?: number;
   },
 ): URLSearchParams {
@@ -307,9 +271,6 @@ export function buildBrowseSearchParams(
   if (query.sort !== "recent_desc") {
     params.set("sort", query.sort);
   }
-  if (query.minStars > 0) {
-    params.set("minStars", String(query.minStars));
-  }
   if ((query.page ?? 1) > 1) {
     params.set("page", String(query.page));
   }
@@ -318,7 +279,7 @@ export function buildBrowseSearchParams(
 }
 
 export function buildBrowseHref(
-  query: Pick<BrowsePageResult, "q" | "sort" | "minStars"> & {
+  query: Pick<BrowsePageResult, "q" | "sort"> & {
     page?: number;
   },
   pathname = "/browse",

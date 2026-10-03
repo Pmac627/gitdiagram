@@ -242,3 +242,144 @@ describe("bounded source ingestion", () => {
     ).toBe(2);
   });
 });
+
+describe("secret redaction in source excerpts", () => {
+  const AWS_KEY = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
+  const keyBody = [
+    "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj",
+    "MzEfYyjiWA4R4/M2bS1GB4t7NXp98C3SC6dVMvDuictGeurT8jNbvJZHtCSuYEvu",
+  ];
+  const keyBlock = `-----BEGIN PRIVATE KEY-----\n${keyBody.join("\n")}\n-----END PRIVATE KEY-----`;
+
+  function perPathRepo(files: Record<string, string>, isPrivate = false) {
+    const paths = Object.keys(files);
+
+    return {
+      defaultBranch: "main",
+      fileTree: paths.join("\n"),
+      readme: "",
+      isPrivate,
+      stargazerCount: 0,
+      pathTypes: new Map(paths.map((p) => [p, "blob"])),
+      sourceBlobs: new Map(
+        paths.map((p) => [
+          p,
+          { sha: blobHash(files[p]!), size: Buffer.byteLength(files[p]!) },
+        ]),
+      ),
+    } satisfies GithubData;
+  }
+
+  function stubPublicFetch(files: Record<string, string>) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string) => {
+        const path = Object.keys(files).find((p) => String(input).endsWith(p));
+
+        return new Response(path ? files[path]! : "", {
+          status: path ? 200 : 404,
+        });
+      }),
+    );
+  }
+
+  it("redacts secrets in a public file before it enters the source text", async () => {
+    const files = {
+      "src/config.ts": `export const key = "${AWS_KEY}";\nexport const main = 1;\n`,
+    };
+    stubPublicFetch(files);
+
+    const result = await fetchSourceContext({
+      username: "owner",
+      repo: "repo",
+      githubData: perPathRepo(files),
+      selectedPaths: ["src/config.ts"],
+    });
+
+    expect(result.text).not.toContain(AWS_KEY);
+    expect(result.text).toContain("[REDACTED:aws-access-key]");
+    expect(result.text).toContain("export const main = 1;");
+    expect(result.redactedSecretCount).toBe(1);
+  });
+
+  it("redacts secrets in a private file read through the blob API", async () => {
+    const text = `export const key = "${AWS_KEY}";\n`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => body(text)),
+    );
+
+    const result = await fetchSourceContext({
+      username: "owner",
+      repo: "repo",
+      githubData: perPathRepo({ "src/config.ts": text }, true),
+      githubPat: "private-caller-token",
+      selectedPaths: ["src/config.ts"],
+    });
+
+    expect(result.text).not.toContain(AWS_KEY);
+    expect(result.redactedSecretCount).toBe(1);
+  });
+
+  it("scans the whole file before excerpting, so a key block never leaks through a window", async () => {
+    const filler = "const value = compute(input, options);\n".repeat(400);
+    const text = `${filler}${keyBlock}\n${filler}`;
+    expect(text.length).toBeGreaterThan(10_000);
+    const files = { "src/big.ts": text };
+    stubPublicFetch(files);
+
+    const result = await fetchSourceContext({
+      username: "owner",
+      repo: "repo",
+      githubData: perPathRepo(files),
+      selectedPaths: ["src/big.ts"],
+    });
+
+    expect(result.text).toContain("(partial excerpt)");
+    for (const line of keyBody) {
+      expect(result.text).not.toContain(line);
+    }
+    expect(result.text).not.toContain("PRIVATE KEY");
+    expect(result.redactedSecretCount).toBe(1);
+  });
+
+  it("sums findings across files and reports zero for clean sources", async () => {
+    const files = {
+      "src/a.ts": `export const a = "${AWS_KEY}";\n`,
+      "src/b.ts": `export const b = "${AWS_KEY}";\nexport const c = "${AWS_KEY}";\n`,
+      "src/c.ts": "export const clean = 1;\n",
+    };
+    stubPublicFetch(files);
+
+    const result = await fetchSourceContext({
+      username: "owner",
+      repo: "repo",
+      githubData: perPathRepo(files),
+      selectedPaths: Object.keys(files),
+    });
+
+    expect(result.redactedSecretCount).toBe(3);
+    expect(result.text).not.toContain(AWS_KEY);
+
+    stubPublicFetch({ "src/main.ts": source });
+    const clean = await fetchSourceContext({
+      username: "owner",
+      repo: "repo",
+      githubData: repo(),
+      selectedPaths: ["src/main.ts"],
+    });
+
+    expect(clean.redactedSecretCount).toBe(0);
+  });
+
+  it("reports zero redactions when no source is available", async () => {
+    const result = await fetchSourceContext({
+      username: "owner",
+      repo: "repo",
+      githubData: { ...repo(), sourceBlobs: new Map() },
+      selectedPaths: ["src/main.ts"],
+    });
+
+    expect(result.redactedSecretCount).toBe(0);
+  });
+});

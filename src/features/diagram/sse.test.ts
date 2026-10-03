@@ -22,6 +22,24 @@ function body(chunks: Uint8Array[], open = false) {
 }
 
 describe("readSSEStream", () => {
+  it("ignores padded comment frames between data events", async () => {
+    const padding = `: keep-alive ${" ".repeat(9_216)}\n\n`;
+    const { stream } = body([
+      new TextEncoder().encode(
+        `data: {"status":"started"}\n\n${padding}data: {"status":"complete"}\n\n`,
+      ),
+    ]);
+    const seen: string[] = [];
+
+    const outcome = await readSSEStream<{ status: string }>(
+      stream,
+      (message) => void seen.push(message.status),
+    );
+
+    expect(outcome).toBe("ended");
+    expect(seen).toEqual(["started", "complete"]);
+  });
+
   it("decodes characters split across reads and flushes a final unterminated event", async () => {
     const bytes = new TextEncoder().encode(
       'data: {"status":"a","message":"café"}\r\n\r\ndata: {"status":"b"}',
@@ -73,6 +91,16 @@ describe("readSSEStream", () => {
 });
 
 describe("parseSSEChunk", () => {
+  it("ignores comment lines even when they contain JSON-looking data", () => {
+    const messages = parseSSEChunk<{ status: string }>(
+      ': data: {"status":"fake"}\n' +
+        'data: {"status":"real"}\n' +
+        ": keep-alive\n",
+    );
+
+    expect(messages).toEqual([{ status: "real" }]);
+  });
+
   it("parses valid SSE data lines", () => {
     const chunk =
       'data: {"status":"started","message":"Starting"}\n\n' +

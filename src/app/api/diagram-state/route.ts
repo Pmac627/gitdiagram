@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { requireOperator } from "~/server/auth/require-operator";
 
 import { getDiagramStateRecord } from "~/server/storage/diagram-state";
 import {
@@ -25,6 +26,9 @@ const diagramStateRequestSchema = z.strictObject({
 });
 
 export async function POST(request: Request): Promise<Response> {
+  const denied = await requireOperator(request);
+  if (denied) return denied;
+
   const parsed = await parseSameOriginJsonRequest(request, {
     schema: diagramStateRequestSchema,
     maxBytes: MAX_DIAGRAM_STATE_REQUEST_BYTES,

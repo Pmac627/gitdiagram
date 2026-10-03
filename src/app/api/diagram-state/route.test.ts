@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("server-only", () => ({}));
+
 const mocks = vi.hoisted(() => ({
   getDiagramStateRecord: vi.fn(),
   resolveRequestCredentials: vi.fn(),
@@ -14,6 +16,9 @@ vi.mock("~/server/http/request-credentials", () => ({
 }));
 
 import { POST } from "~/app/api/diagram-state/route";
+import { registerOperatorSession } from "~/server/auth/test-session";
+
+const session = registerOperatorSession();
 
 function request(
   body: unknown,
@@ -26,6 +31,7 @@ function request(
       "Content-Type": "application/json",
       Origin: "https://gitdiagram.com",
       "Sec-Fetch-Site": "same-origin",
+      ...session.headers,
       ...headers,
     },
     body: JSON.stringify(body),

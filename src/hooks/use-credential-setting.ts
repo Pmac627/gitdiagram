@@ -6,6 +6,7 @@ import {
   clearCredential,
   getCredentialStatus,
   saveCredential,
+  type AIProvider,
   type CredentialKind,
   type CredentialStatus,
 } from "~/features/credentials/api";
@@ -13,6 +14,8 @@ import {
 export type CredentialSettingError = "load" | "save" | "clear" | null;
 
 interface CredentialSettingState {
+  apiKeyProvider: AIProvider | null;
+  configuredProvider: AIProvider | null;
   error: CredentialSettingError;
   isConfigured: boolean;
   pendingAction: "save" | "clear" | null;
@@ -30,6 +33,8 @@ const CREDENTIAL_STATUS_KEYS = {
 } as const satisfies Record<CredentialKind, keyof CredentialStatus>;
 
 const INITIAL_STATE: CredentialSettingState = {
+  apiKeyProvider: null,
+  configuredProvider: null,
   error: null,
   isConfigured: false,
   pendingAction: null,
@@ -59,6 +64,8 @@ export function useCredentialSetting({
         setState((current) => ({
           ...current,
           isConfigured: status[CREDENTIAL_STATUS_KEYS[credential]],
+          apiKeyProvider: status.apiKeyProvider,
+          configuredProvider: status.configuredProvider,
         }));
       })
       .catch(() => {
@@ -87,14 +94,25 @@ export function useCredentialSetting({
       }));
 
       try {
-        const status =
-          action === "save"
-            ? await saveCredential(credential, state.value)
-            : await clearCredential(credential);
+        let status: CredentialStatus;
+        if (action === "clear") {
+          status = await clearCredential(credential);
+        } else if (credential === "openai_api_key") {
+          // The key is bound to the provider the server uses now. Learn it
+          // first when the status has not loaded yet.
+          const provider =
+            state.configuredProvider ??
+            (await getCredentialStatus()).configuredProvider;
+          status = await saveCredential(credential, state.value, provider);
+        } else {
+          status = await saveCredential(credential, state.value);
+        }
         if (requestRevisionRef.current === requestRevision) {
           setState((current) => ({
             ...current,
             isConfigured: status[CREDENTIAL_STATUS_KEYS[credential]],
+            apiKeyProvider: status.apiKeyProvider,
+            configuredProvider: status.configuredProvider,
             value: "",
           }));
         }
@@ -116,7 +134,7 @@ export function useCredentialSetting({
         }
       }
     },
-    [credential, state.value],
+    [credential, state.configuredProvider, state.value],
   );
 
   const save = useCallback(() => mutateCredential("save"), [mutateCredential]);

@@ -1,21 +1,11 @@
 import "server-only";
 
 import type { AdminState } from "~/features/admin/types";
-import { readClaudeCredit } from "~/server/admin/claude-credit";
-import { readControlsForDisplay } from "~/server/admin/controls";
-import {
-  createPresenceToken,
-  presenceSocketUrl,
-} from "~/server/admin/live-events";
-import { videoUsageToday } from "~/server/explainer/limits";
 import * as voice from "~/server/explainer/voice";
-import { readComplimentaryUsageToday } from "~/server/generate/complimentary-gate";
 
-// The dashboard polls this every 5 s. The two balances come from outside
-// services (OpenRouter, Anthropic) that can be slow, so each gets a short
-// deadline of its own and shows as unreadable past it, rather than holding up
-// the switches and budgets. A late answer is not wasted: both are cached, so
-// the next poll gets it.
+// The dashboard polls this every 5 s. The voice balance comes from an outside
+// service (OpenRouter) that can be slow, so it gets a short deadline of its
+// own and shows as unreadable past it, rather than holding up the dashboard. A late answer is not wasted: it is cached, so the next poll gets it.
 
 const BALANCE_DEADLINE_MS = 3_000;
 // OpenRouter's balance moves only as videos are voiced.
@@ -47,46 +37,15 @@ function cachedVoiceCredit(now = Date.now()): Promise<number | null> {
   return voiceCache.usd;
 }
 
-async function claudeCreditState(): Promise<AdminState["claudeCredit"]> {
-  try {
-    return (await within(readClaudeCredit(), BALANCE_DEADLINE_MS)) ?? "no-key";
-  } catch {
-    return "unreadable";
-  }
-}
-
-/** Everything the dashboard polls: switches, today's budgets, balances. */
+/** Everything the dashboard polls: the voice balance and its pause. */
 export async function readAdminState(): Promise<AdminState> {
-  const [
-    { controls, unreadable: controlsUnreadable },
-    video,
-    voicePausedUntil,
-    voiceCreditUsd,
-    claudeCredit,
-    diagramQuota,
-  ] = await Promise.all([
-    readControlsForDisplay({ fresh: true }),
-    orNull(videoUsageToday()),
+  const [voicePausedUntil, voiceCreditUsd] = await Promise.all([
     orNull(voice.voicePausedUntil()),
     orNull(within(cachedVoiceCredit(), BALANCE_DEADLINE_MS)),
-    claudeCreditState(),
-    orNull(readComplimentaryUsageToday()),
   ]);
-  const url = presenceSocketUrl();
-  const token = createPresenceToken();
   return {
     now: Date.now(),
-    controls,
-    controlsUnreadable,
-    video,
     voicePausedUntil,
     voiceCreditUsd,
-    claudeCredit,
-    diagramQuota,
-    presence: url && token ? { url, token } : null,
-    deployment: {
-      commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
-      region: process.env.VERCEL_REGION ?? null,
-    },
   };
 }

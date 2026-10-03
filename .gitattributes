@@ -1,0 +1,7 @@
+# Store and check out text files with LF on every OS, so Prettier's
+# format:check and byte-exact tests behave the same on Windows as in CI.
+* text=auto eol=lf
+
+# Windows command scripts need CRLF to run correctly.
+*.cmd text eol=crlf
+*.bat text eol=crlf

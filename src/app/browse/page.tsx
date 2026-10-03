@@ -25,8 +25,7 @@ function firstSearchParam(value: string | string[] | undefined) {
 function BrowseCatalogStreamingFallback() {
   return (
     <div className="space-y-6" aria-busy="true" aria-live="polite">
-      <div className="neo-panel grid grid-cols-2 gap-4 rounded-lg p-4 md:grid-cols-[minmax(0,1fr)_220px_180px] md:gap-5 md:p-6">
-        <Skeleton className="h-[74px] w-full first:col-span-2 md:first:col-span-1" />
+      <div className="neo-panel grid grid-cols-2 gap-4 rounded-lg p-4 md:grid-cols-[minmax(0,1fr)_220px] md:gap-5 md:p-6">
         <Skeleton className="h-[74px] w-full first:col-span-2 md:first:col-span-1" />
         <Skeleton className="h-[74px] w-full first:col-span-2 md:first:col-span-1" />
       </div>
@@ -65,7 +64,6 @@ export default async function BrowsePage({
   const initialQuery: BrowseQuery = {
     q: firstSearchParam(params.q),
     sort: firstSearchParam(params.sort),
-    minStars: firstSearchParam(params.minStars),
     page: firstSearchParam(params.page),
   };
   return (

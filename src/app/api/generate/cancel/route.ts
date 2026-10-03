@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { markGenerationCancelled } from "~/server/generate/cancellation";
+import { requireOperator } from "~/server/auth/require-operator";
 import {
   generationCancelTokenSchema,
   generationSessionIdSchema,
@@ -22,6 +23,9 @@ const cancellationRequestSchema = z.strictObject({
 });
 
 export async function POST(request: Request): Promise<Response> {
+  const denied = await requireOperator(request);
+  if (denied) return denied;
+
   const parsed = await parseSameOriginJsonRequest(request, {
     schema: cancellationRequestSchema,
     maxBytes: MAX_CANCELLATION_REQUEST_BYTES,

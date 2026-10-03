@@ -3,17 +3,12 @@ import {
   selectAnalysisModel,
   MAX_SOURCE_CHARACTERS,
 } from "~/server/generate/repository-context";
-import { estimateTokens } from "~/server/generate/openai";
+import { estimateTokens } from "~/server/generate/token-estimate";
+import { createGenerationProvider } from "~/server/ai/create-provider";
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 
 import { estimateGenerationCost } from "~/server/generate/cost-estimate";
-import {
-  getComplimentaryModelMismatchMessage,
-  getComplimentaryProviderMismatchMessage,
-  isComplimentaryGateEnabled,
-  modelMatchesComplimentaryFamily,
-} from "~/server/generate/complimentary-gate";
 import {
   getGithubData,
   REPOSITORY_TOO_LARGE_ERROR,
@@ -23,20 +18,12 @@ import {
   getProvider,
   shouldUseExactInputTokenCount,
 } from "~/server/generate/model-config";
-import {
-  consumeGenerationInfrastructureRateLimit,
-  getGenerationInfrastructureRateLimitMessage,
-} from "~/server/generate/rate-limit";
-import {
-  assertModelPricingAvailable,
-  MODEL_PRICING_UNAVAILABLE_ERROR,
-  ModelPricingUnavailableError,
-} from "~/server/generate/pricing";
 import { parseGenerateRequest } from "~/server/generate/types";
-import { getClientIp } from "~/server/http/client-ip";
 import { classifyGitHubError } from "~/server/generate/github-errors";
 import { resolveRequestCredentials } from "~/server/http/request-credentials";
 import { isSameOriginRequest } from "~/server/http/same-origin";
+import { requireOperator } from "~/server/auth/require-operator";
+import { redactLogText } from "~/server/log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -58,16 +45,24 @@ function jsonResponse(
   });
 }
 
+/**
+ * Estimate diagram generation cost for an authorized request.
+ * @see docs/flows/diagram-generation.md
+ */
 export async function POST(request: Request) {
+  const denied = await requireOperator(request);
+  if (denied) return denied;
+
   const requestId = randomUUID();
   const deadlineSignal = AbortSignal.timeout(COST_REQUEST_DEADLINE_MS);
   const signal = AbortSignal.any([request.signal, deadlineSignal]);
   let hasCallerGithubToken = false;
+  let callerApiKey: string | undefined;
+  let callerGithubPat: string | undefined;
 
   try {
     // Estimation runs the same bounded GitHub ingestion as a real generation,
-    // so an unguarded endpoint lets anyone drain the server's shared GitHub
-    // API budget and take generation down for everybody.
+    // so it stays same-origin only.
     if (!isSameOriginRequest(request)) {
       return jsonResponse(
         {
@@ -97,49 +92,13 @@ export async function POST(request: Request) {
       githubPat: parsed.data.github_pat,
     });
 
-    const rateLimit = await consumeGenerationInfrastructureRateLimit({
-      clientIp: getClientIp(request),
-    });
     hasCallerGithubToken = Boolean(githubPat?.trim());
-    if (!rateLimit.allowed) {
-      return jsonResponse(
-        {
-          ok: false,
-          error: getGenerationInfrastructureRateLimitMessage(
-            rateLimit.retryAfterSeconds,
-          ),
-          error_code: "RATE_LIMITED",
-        },
-        { status: 429, requestId },
-      );
-    }
+    callerApiKey = apiKey;
+    callerGithubPat = githubPat;
+
     const provider = getProvider();
     const model = getModel(provider);
-    assertModelPricingAvailable(model);
-
-    if (isComplimentaryGateEnabled() && !apiKey) {
-      if (provider !== "openai") {
-        return jsonResponse(
-          {
-            ok: false,
-            error: getComplimentaryProviderMismatchMessage(),
-            error_code: "COMPLIMENTARY_GATE_PROVIDER_MISMATCH",
-          },
-          { requestId },
-        );
-      }
-
-      if (!modelMatchesComplimentaryFamily(model)) {
-        return jsonResponse(
-          {
-            ok: false,
-            error: getComplimentaryModelMismatchMessage(),
-            error_code: "COMPLIMENTARY_GATE_MODEL_MISMATCH",
-          },
-          { requestId },
-        );
-      }
-    }
+    const generationProvider = createGenerationProvider({ provider, apiKey });
 
     const githubData = await getGithubData(username, repo, githubPat, signal);
     const context = prepareRepositoryContext(githubData);
@@ -150,6 +109,7 @@ export async function POST(request: Request) {
     });
     const estimate = await estimateGenerationCost({
       provider,
+      generationProvider,
       model,
       analysisModel,
       sourceTokenReserve: context.selectedPaths.length
@@ -167,6 +127,10 @@ export async function POST(request: Request) {
       signal,
       clientRequestId: `${requestId}:estimate`,
     });
+    const analysisPricing =
+      estimate.analysisPricing === undefined
+        ? estimate.pricing
+        : estimate.analysisPricing;
 
     return jsonResponse(
       {
@@ -178,18 +142,20 @@ export async function POST(request: Request) {
         pricing_model: estimate.pricingModel,
         estimated_input_tokens: estimate.estimatedInputTokens,
         estimated_output_tokens: estimate.estimatedOutputTokens,
-        analysis_pricing: {
-          model: analysisModel,
-          input_per_million_usd: (estimate.analysisPricing ?? estimate.pricing)
-            .inputPerMillionUsd,
-          output_per_million_usd: (estimate.analysisPricing ?? estimate.pricing)
-            .outputPerMillionUsd,
-        },
-        pricing: {
-          model,
-          input_per_million_usd: estimate.pricing.inputPerMillionUsd,
-          output_per_million_usd: estimate.pricing.outputPerMillionUsd,
-        },
+        analysis_pricing: analysisPricing
+          ? {
+              model: analysisModel,
+              input_per_million_usd: analysisPricing.inputPerMillionUsd,
+              output_per_million_usd: analysisPricing.outputPerMillionUsd,
+            }
+          : null,
+        pricing: estimate.pricing
+          ? {
+              model,
+              input_per_million_usd: estimate.pricing.inputPerMillionUsd,
+              output_per_million_usd: estimate.pricing.outputPerMillionUsd,
+            }
+          : null,
       },
       { requestId },
     );
@@ -210,7 +176,6 @@ export async function POST(request: Request) {
         ? error.message
         : "Failed to estimate generation cost.";
     const timedOut = deadlineSignal.aborted;
-    const pricingUnavailable = error instanceof ModelPricingUnavailableError;
     const repositoryTooLarge = message === REPOSITORY_TOO_LARGE_ERROR;
     const repositoryNotFound = message === "Repository not found.";
 
@@ -221,7 +186,7 @@ export async function POST(request: Request) {
         JSON.stringify({
           event: "generate.cost.failed",
           request_id: requestId,
-          error: message,
+          error: redactLogText(message, [callerApiKey, callerGithubPat]),
         }),
       );
     }
@@ -231,31 +196,25 @@ export async function POST(request: Request) {
         ok: false,
         error: timedOut
           ? "Cost estimation timed out. Please retry."
-          : pricingUnavailable
-            ? MODEL_PRICING_UNAVAILABLE_ERROR
-            : repositoryTooLarge || repositoryNotFound
-              ? message
-              : "Failed to estimate generation cost. Please retry.",
+          : repositoryTooLarge || repositoryNotFound
+            ? message
+            : "Failed to estimate generation cost. Please retry.",
         error_code: timedOut
           ? "GENERATION_TIMEOUT"
-          : pricingUnavailable
-            ? "MODEL_PRICING_UNAVAILABLE"
-            : repositoryTooLarge
-              ? "TOKEN_LIMIT_EXCEEDED"
-              : repositoryNotFound
-                ? "REPOSITORY_NOT_FOUND"
-                : "COST_ESTIMATION_FAILED",
+          : repositoryTooLarge
+            ? "TOKEN_LIMIT_EXCEEDED"
+            : repositoryNotFound
+              ? "REPOSITORY_NOT_FOUND"
+              : "COST_ESTIMATION_FAILED",
       },
       {
         status: timedOut
           ? 504
-          : pricingUnavailable
-            ? 503
-            : repositoryTooLarge
-              ? 413
-              : repositoryNotFound
-                ? 404
-                : 500,
+          : repositoryTooLarge
+            ? 413
+            : repositoryNotFound
+              ? 404
+              : 500,
         requestId,
       },
     );

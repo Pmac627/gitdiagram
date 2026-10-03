@@ -8,8 +8,6 @@ date: 2026-09-28
 sources:
   - id: runtime
     resource: src/**
-  - id: deployment
-    resource: Dockerfile
 generated: { by: codex/gpt-6, at: 2026-09-28T18:30:21Z }
 verified:
   - { by: codex/gpt-6, at: 2026-09-28T18:30:21Z }
@@ -106,6 +104,8 @@ Work: moderate.
 
 Selection A gives repository owners control of their data.
 Selection B decreases accidental disclosure, but a content scan cannot show that a file is safe.
+
+Status: `redactSecrets` in `src/server/generate/secret-scan.ts` does Choice B. `fetchSourceContext` in `src/server/generate/source-context.ts` and `prepareRepositoryContext` in `src/server/generate/repository-context.ts` use it. See [Diagram generation](flows/diagram-generation.md).
 
 ### VULN-005: Revoked admin cookie can work during Redis outage
 

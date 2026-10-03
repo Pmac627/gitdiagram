@@ -412,6 +412,9 @@ export function createFilmWriters(
   const fallback: Role | undefined =
     planner.fallback ??
     (designer.model !== director.model ? designer : undefined);
+  // TODO: the director and designer calls may later route through the provider
+  // layer in src/server/ai/ (the GenerationProvider interface) instead of
+  // building SDK clients here.
   const clients = new Map<string, Anthropic | OpenAI>();
   const clientFor = (model: string) => {
     let client = clients.get(model);

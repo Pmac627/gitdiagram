@@ -109,12 +109,14 @@ const DEAD_ENDS = new Set([403, 404, 429, 503]);
 
 /**
  * Start making a repository's video. `previous` is the stored video a failed
- * regeneration should leave one click away.
+ * regeneration should leave one click away. `options.regenerate` asks the
+ * server to replace a stored video; without it an existing video is shown.
  */
 export function startVideoRun(
   username: string,
   repo: string,
   previous?: VideoArtifact,
+  options?: { regenerate?: boolean },
 ) {
   const key = runKey(username, repo);
   if (isVideoRunActive(username, repo)) return;
@@ -149,20 +151,27 @@ export function startVideoRun(
   };
 
   update(key, { kind: "generating", stage: "reading", startedAt, progress });
-  streamExplainerVideo(username, repo, (event) => {
-    if (event.status === "complete") ready(event.artifact);
-    else if (event.status === "error")
-      fail(event.error, event.retryable !== false);
-    else {
-      progress = { ...progress, ...event.progress };
-      update(key, {
-        kind: "generating",
-        stage: event.status,
-        startedAt,
-        progress,
-      });
-    }
-  }).catch(async (error: unknown) => {
+  streamExplainerVideo(
+    username,
+    repo,
+    (event) => {
+      if (event.status === "complete") {
+        ready(event.artifact);
+      } else if (event.status === "error") {
+        fail(event.error, event.retryable !== false);
+      } else {
+        progress = { ...progress, ...event.progress };
+        update(key, {
+          kind: "generating",
+          stage: event.status,
+          startedAt,
+          progress,
+        });
+      }
+    },
+    undefined,
+    options,
+  ).catch(async (error: unknown) => {
     if (error instanceof VideoRequestError) {
       // Turned down before any work started.
       if (error.status === 409) {

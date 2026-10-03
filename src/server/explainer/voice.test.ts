@@ -4,12 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-const { runProcess, transcribe, upstashCommand } = vi.hoisted(() => ({
+const { runProcess, transcribe } = vi.hoisted(() => ({
   runProcess: vi.fn(),
   transcribe: vi.fn(),
-  upstashCommand: vi.fn(),
 }));
-vi.mock("~/server/storage/upstash", () => ({ upstashCommand }));
 vi.mock("~/server/child-process", () => ({ runProcess }));
 vi.mock("openai", async (importOriginal) => ({
   ...(await importOriginal<typeof OpenAIModule>()),
@@ -18,7 +16,12 @@ vi.mock("openai", async (importOriginal) => ({
   },
 }));
 
-import { speak, VoiceUnavailableError } from "./voice";
+import { closeDb, getDb } from "~/server/storage/db";
+import {
+  createTempDataDir,
+  type TempDataDir,
+} from "~/server/storage/test-data-dir";
+import { speak, voicePausedUntil, VoiceUnavailableError } from "./voice";
 
 const actual = await vi.importActual<typeof ChildProcessModule>(
   "~/server/child-process",
@@ -38,26 +41,28 @@ const heard = {
 describe("the voice", () => {
   const fetchMock = vi.fn();
 
-  beforeEach(() => {
+  let dataDir: TempDataDir;
+
+  beforeEach(async () => {
+    dataDir = await createTempDataDir();
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter");
     vi.stubEnv("OPENAI_API_KEY", "openai");
     vi.stubGlobal("fetch", fetchMock);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    upstashCommand.mockResolvedValue("OK");
     transcribe.mockResolvedValue(heard);
     runProcess.mockImplementation(actual.runProcess);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     fetchMock.mockReset();
     transcribe.mockReset();
-    upstashCommand.mockReset();
     runProcess.mockReset();
+    await dataDir.dispose();
   });
 
   it("reads the script in Charon's voice, and times the take", async () => {
@@ -196,7 +201,7 @@ describe("the voice", () => {
   it("an ffmpeg that quits without reading its input only fails the take", async () => {
     // A real early exit: writing the take to a closed stdin raises EPIPE.
     runProcess.mockImplementation((_binary: string, _args: string[], options) =>
-      actual.runProcess("/bin/sh", ["-c", "exit 3"], options),
+      actual.runProcess(process.execPath, ["-e", "process.exit(3)"], options),
     );
     fetchMock.mockResolvedValueOnce(new Response(Buffer.alloc(4_000_000)));
     await expect(speak("Lost? It helps.")).rejects.toThrow(
@@ -204,12 +209,65 @@ describe("the voice", () => {
     );
   });
 
-  it("pauses new videos when the balance runs out", async () => {
-    fetchMock.mockResolvedValue(new Response("{}", { status: 402 }));
+  it("is not paused before the balance runs out", async () => {
+    await expect(voicePausedUntil()).resolves.toBeNull();
+  });
+
+  it("pauses new videos for ten minutes when the balance runs out", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-29T10:00:00.000Z"));
+    fetchMock.mockImplementation(
+      async () => new Response("{}", { status: 402 }),
+    );
+
     await expect(speak("Lost? It helps.")).rejects.toBeInstanceOf(
       VoiceUnavailableError,
     );
-    const [command] = upstashCommand.mock.calls[0]! as [unknown[]];
-    expect(command.slice(0, 2)).toEqual(["SET", "video:v1:voice:paused-until"]);
+
+    const until = await voicePausedUntil();
+    expect(until).toBe(Date.parse("2026-09-29T10:10:00.000Z"));
+
+    // Still paused a moment before, and lifted on its own once it has passed.
+    vi.setSystemTime(new Date("2026-09-29T10:09:59.000Z"));
+    await expect(voicePausedUntil()).resolves.toBe(until);
+    vi.setSystemTime(new Date("2026-09-29T10:10:01.000Z"));
+    await expect(voicePausedUntil()).resolves.toBeNull();
+  });
+
+  it("keeps the pause in SQLite under its old key, across a reopened database", async () => {
+    fetchMock.mockImplementation(
+      async () => new Response("{}", { status: 402 }),
+    );
+    await expect(speak("Lost? It helps.")).rejects.toBeInstanceOf(
+      VoiceUnavailableError,
+    );
+
+    const row = getDb()
+      .prepare("SELECT value FROM kv WHERE key = ?")
+      .get("video:v1:voice:paused-until") as { value: string } | undefined;
+    expect(Number(row?.value)).toBeGreaterThan(Date.now());
+
+    closeDb();
+
+    await expect(voicePausedUntil()).resolves.toBe(Number(row?.value));
+  });
+
+  it("pausing again replaces the earlier pause instead of stacking", async () => {
+    fetchMock.mockImplementation(
+      async () => new Response("{}", { status: 402 }),
+    );
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-29T10:00:00.000Z"));
+    await expect(speak("Lost? It helps.")).rejects.toBeInstanceOf(
+      VoiceUnavailableError,
+    );
+    vi.setSystemTime(new Date("2026-09-29T10:05:00.000Z"));
+    await expect(speak("Lost? It helps.")).rejects.toBeInstanceOf(
+      VoiceUnavailableError,
+    );
+
+    await expect(voicePausedUntil()).resolves.toBe(
+      Date.parse("2026-09-29T10:15:00.000Z"),
+    );
   });
 });

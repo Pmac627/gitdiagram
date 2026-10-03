@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type * as RequestCredentialsModule from "~/server/http/request-credentials";
 
+vi.mock("server-only", () => ({}));
+
 const mocks = vi.hoisted(() => ({
   clearCredential: vi.fn(),
   getCredentialStatus: vi.fn(),
@@ -20,6 +22,9 @@ vi.mock("~/server/http/request-credentials", async (importOriginal) => {
 });
 
 import { POST } from "~/app/api/credentials/route";
+import { registerOperatorSession } from "~/server/auth/test-session";
+
+const session = registerOperatorSession();
 
 function request(body: unknown, origin = "https://gitdiagram.com"): Request {
   return new Request("https://gitdiagram.com/api/credentials", {
@@ -27,6 +32,7 @@ function request(body: unknown, origin = "https://gitdiagram.com"): Request {
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       Origin: origin,
+      ...session.headers,
       "Sec-Fetch-Site":
         origin === "https://gitdiagram.com" ? "same-origin" : "cross-site",
     },
@@ -51,6 +57,8 @@ describe("POST /api/credentials", () => {
     mocks.getCredentialStatus.mockResolvedValue({
       openaiApiKeyConfigured: true,
       githubPatConfigured: false,
+      configuredProvider: "openai",
+      apiKeyProvider: "openai",
     });
 
     const response = await POST(request({ action: "status" }));
@@ -62,6 +70,8 @@ describe("POST /api/credentials", () => {
       credentials: {
         openaiApiKeyConfigured: true,
         githubPatConfigured: false,
+        configuredProvider: "openai",
+        apiKeyProvider: "openai",
       },
     });
   });
@@ -72,6 +82,7 @@ describe("POST /api/credentials", () => {
         action: "set",
         credential: "openai_api_key",
         value: "sk-secret",
+        provider: "openai",
       }),
     );
     const clearResponse = await POST(
@@ -86,6 +97,7 @@ describe("POST /api/credentials", () => {
     expect(mocks.setCredential).toHaveBeenCalledWith(
       "openai_api_key",
       "sk-secret",
+      "openai",
     );
     expect(mocks.clearCredential).toHaveBeenCalledWith("github_pat");
     expect(JSON.stringify(await setResponse.json())).not.toContain("sk-secret");

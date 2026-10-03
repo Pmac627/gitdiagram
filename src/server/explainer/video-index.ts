@@ -2,18 +2,19 @@ import "server-only";
 
 import type { VideoCard } from "~/features/explainer/catalog-types";
 import type { VideoArtifact } from "~/features/explainer/types";
-import { upstashCommand, upstashEval } from "~/server/storage/upstash";
+import { getDb, withImmediateTransaction } from "~/server/storage/db";
+import { kvRead, kvWrite, kvWriteIfAbsent } from "~/server/storage/kv";
 
-// /videos and the sitemap list every stored video. Finding them in R2 meant
-// listing every object under video/v1/ (about twenty per video) and then
-// reading every artifact, so a Redis hash keeps one card per repository
-// instead, written whenever a video or its poster is stored. The hash is
-// built once from R2 (see catalog.ts); the ready key says that has happened.
-// Only production storage is indexed: local videos never reach this Redis.
+import { errorText } from "~/server/log";
+// /videos and the sitemap list every stored video. Reading every artifact for
+// each request would be slow, so the `video_index` table keeps one card per
+// repository, written whenever a video or its poster is stored. The table is
+// built once from the video store (see catalog.ts); the ready flag says that
+// has happened.
 
-const INDEX_KEY = "video:v1:index";
 const READY_KEY = "video:v1:index:ready";
 const BUILD_KEY = "video:v1:index:building";
+const BUILD_CLAIM_MS = 5 * 60 * 1000;
 
 const field = (owner: string, repo: string) =>
   `${owner.toLowerCase()}/${repo.toLowerCase()}`;
@@ -24,7 +25,6 @@ export function videoCard(
   posterAt?: number,
 ): VideoCard {
   return {
-    // First, so the write script can read it back from the stored JSON.
     createdAt: artifact.createdAt,
     owner: artifact.meta.owner,
     repo: artifact.meta.repo,
@@ -37,40 +37,28 @@ export function videoCard(
   };
 }
 
-// ARGV: a mode, then (field, card JSON, createdAt) triples. "replace" writes
-// a card unless the stored one is for a newer version (ISO times compare as
-// strings), so a late write for a replaced video never wins; "missing" only
-// fills repositories with no card yet, so building the index never
-// overwrites a card written meanwhile.
-const WRITE_SCRIPT = `
-local written = 0
-for index = 2, #ARGV, 3 do
-  local current = redis.call("HGET", KEYS[1], ARGV[index])
-  local write = not current
-  if current and ARGV[1] == "replace" then
-    local stored = string.match(current, '"createdAt":"([^"]*)"')
-    write = not stored or stored <= ARGV[index + 2]
-  end
-  if write then
-    redis.call("HSET", KEYS[1], ARGV[index], ARGV[index + 1])
-    written = written + 1
-  end
-end
-return written
-`;
+// "replace" writes a card unless the stored one is for a newer version (ISO
+// times compare as strings), so a late write for a replaced video never wins;
+// "missing" only fills repositories with no card yet, so building the index
+// never overwrites a card written meanwhile.
+function writeCards(cards: VideoCard[], mode: "replace" | "missing"): void {
+  const conflict =
+    mode === "replace"
+      ? "ON CONFLICT (repo_key) DO UPDATE SET created_at = excluded.created_at, card = excluded.card WHERE video_index.created_at <= excluded.created_at"
+      : "ON CONFLICT (repo_key) DO NOTHING";
 
-function writeCards(cards: VideoCard[], mode: "replace" | "missing") {
-  return upstashEval<number>({
-    script: WRITE_SCRIPT,
-    keys: [INDEX_KEY],
-    args: [
-      mode,
-      ...cards.flatMap((card) => [
+  withImmediateTransaction((db) => {
+    const statement = db.prepare(
+      `INSERT INTO video_index (repo_key, created_at, card) VALUES (?, ?, ?) ${conflict}`,
+    );
+
+    for (const card of cards) {
+      statement.run(
         field(card.owner, card.repo),
-        JSON.stringify(card),
         card.createdAt,
-      ]),
-    ],
+        JSON.stringify(card),
+      );
+    }
   });
 }
 
@@ -84,13 +72,13 @@ export async function indexVideo(
   options: { posterAt?: number } = {},
 ): Promise<void> {
   try {
-    await writeCards([videoCard(artifact, options.posterAt)], "replace");
+    writeCards([videoCard(artifact, options.posterAt)], "replace");
   } catch (error) {
     console.error(
       JSON.stringify({
         event: "video.index_write_failed",
         repository: artifact.repository,
-        error: error instanceof Error ? error.message.slice(0, 200) : "unknown",
+        error: errorText(error),
       }),
     );
   }
@@ -98,23 +86,26 @@ export async function indexVideo(
 
 /**
  * Every indexed card, and whether the index is complete: until it has been
- * built from storage it may hold only the videos stored since. Throws if
- * Redis fails.
+ * built from storage it may hold only the videos stored since. Throws if the
+ * database fails.
  */
 export async function readVideoIndex(): Promise<{
   ready: boolean;
   cards: VideoCard[];
 }> {
-  const ready =
-    (await upstashCommand<string | null>(["GET", READY_KEY])) === "1";
-  const values = await upstashCommand<string[]>(["HVALS", INDEX_KEY]);
-  const cards = values.flatMap((value) => {
+  const db = getDb();
+  const ready = kvRead(db, READY_KEY, Date.now()) === "1";
+  const rows = db.prepare("SELECT card FROM video_index").all() as Array<{
+    card: string;
+  }>;
+  const cards = rows.flatMap((row) => {
     try {
-      return [JSON.parse(value) as VideoCard];
+      return [JSON.parse(row.card) as VideoCard];
     } catch {
       return [];
     }
   });
+
   return { ready, cards };
 }
 
@@ -122,18 +113,11 @@ export async function readVideoIndex(): Promise<{
  * Whether this caller should build the index from storage now: one at a
  * time, and at most once every five minutes, so a storage outage that keeps
  * a build from finishing does not list every object on every request.
- * Throws if Redis fails.
+ * Throws if the database fails.
  */
 export async function claimVideoIndexBuild(): Promise<boolean> {
-  return (
-    (await upstashCommand<"OK" | null>([
-      "SET",
-      BUILD_KEY,
-      "1",
-      "NX",
-      "EX",
-      300,
-    ])) === "OK"
+  return withImmediateTransaction((db) =>
+    kvWriteIfAbsent(db, BUILD_KEY, "1", BUILD_CLAIM_MS, Date.now()),
   );
 }
 
@@ -146,7 +130,11 @@ export async function fillVideoIndex(
   cards: VideoCard[],
   { complete }: { complete: boolean },
 ): Promise<void> {
-  for (let start = 0; start < cards.length; start += 100)
-    await writeCards(cards.slice(start, start + 100), "missing");
-  if (complete) await upstashCommand(["SET", READY_KEY, "1"]);
+  writeCards(cards, "missing");
+
+  if (complete) {
+    withImmediateTransaction((db) => {
+      kvWrite(db, READY_KEY, "1", null, Date.now());
+    });
+  }
 }

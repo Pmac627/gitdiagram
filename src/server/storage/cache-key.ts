@@ -3,8 +3,27 @@ import { createHmac } from "node:crypto";
 import type { ArtifactVisibility } from "~/server/storage/types";
 import { readRequiredEnv } from "~/server/storage/config";
 
+/** Bucket (a folder under DATA_DIR/objects) for public artifacts. */
+const PUBLIC_BUCKET = "public";
+/** Bucket for private artifacts, namespaced again by an HMAC of the token. */
+const PRIVATE_BUCKET = "private";
+
+/** The public bucket name. */
+export function getPublicBucketName(): string {
+  return PUBLIC_BUCKET;
+}
+
+function getPrivateBucketName(): string {
+  return PRIVATE_BUCKET;
+}
+
 function normalizeSegment(value: string): string {
-  return encodeURIComponent(value.trim().toLowerCase());
+  // The object store rejects uppercase (Windows paths are case-insensitive),
+  // so the hex digits of each %XX escape are lowercased too.
+  return encodeURIComponent(value.trim().toLowerCase()).replace(
+    /%[0-9A-F]{2}/g,
+    (escape) => escape.toLowerCase(),
+  );
 }
 
 function createPatNamespace(githubPat: string): string {
@@ -47,7 +66,7 @@ export function getPublicLocation(
 
   return {
     visibility: "public",
-    bucket: readRequiredEnv("R2_PUBLIC_BUCKET"),
+    bucket: getPublicBucketName(),
     artifactKey: `public/v1/${normalizedUsername}/${normalizedRepo}.json`,
     statusKey: `status:v1:public:${normalizedUsername}:${normalizedRepo}`,
   };
@@ -64,7 +83,7 @@ export function getPrivateLocation(
 
   return {
     visibility: "private",
-    bucket: readRequiredEnv("R2_PRIVATE_BUCKET"),
+    bucket: getPrivateBucketName(),
     artifactKey: `private/v1/${namespace}/${normalizedUsername}/${normalizedRepo}.json`,
     statusKey: `status:v1:private:${namespace}:${normalizedUsername}:${normalizedRepo}`,
   };

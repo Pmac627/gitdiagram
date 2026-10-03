@@ -1,9 +1,5 @@
 import { REPOSITORY_TOO_LARGE_ERROR } from "./github";
 import { classifyGitHubError } from "./github-errors";
-import {
-  MODEL_PRICING_UNAVAILABLE_ERROR,
-  ModelPricingUnavailableError,
-} from "./pricing";
 
 /**
  * Marks a failure whose message came from (or describes a call to) the model
@@ -97,13 +93,6 @@ export function normalizeGenerationError(params: {
   );
   if (githubError)
     return { message: githubError.message, errorCode: githubError.errorCode };
-  if (params.error instanceof ModelPricingUnavailableError) {
-    return {
-      message: MODEL_PRICING_UNAVAILABLE_ERROR,
-      errorCode: "MODEL_PRICING_UNAVAILABLE",
-    };
-  }
-
   if (params.message === REPOSITORY_TOO_LARGE_ERROR) {
     return {
       message: params.message,

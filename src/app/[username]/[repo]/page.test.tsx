@@ -44,7 +44,7 @@ describe("repository cache URLs", () => {
     expect(metadata.openGraph?.images).toEqual(metadata.twitter?.images);
     expect(metadata.openGraph?.images).toEqual([
       expect.objectContaining({
-        url: "https://gitdiagram.com/acme/demo/opengraph-image",
+        url: "https://gitdiagram.tuple.pro/acme/demo/opengraph-image",
         width: 1200,
         height: 630,
       }),

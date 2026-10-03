@@ -1,14 +1,11 @@
 "use client";
 
-import { Suspense, use, useState } from "react";
+import { useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
 
-import { GitHubIcon } from "~/components/icons/github-icon";
-import { formatCompact } from "~/lib/format";
-import { GITHUB_REPO_URL } from "~/lib/site";
 import { VIDEOS_ENABLED } from "~/lib/video-flag";
 
 import { NewBadge } from "./new-badge";
@@ -22,43 +19,7 @@ const loadPrivateReposDialog = () =>
 const ApiKeyDialog = dynamic(loadApiKeyDialog, { ssr: false });
 const PrivateReposDialog = dynamic(loadPrivateReposDialog, { ssr: false });
 
-interface HeaderClientProps {
-  starCount: Promise<number | null>;
-}
-
-function formatStarCount(count: number) {
-  return formatCompact(count).toLowerCase();
-}
-
-function MobileStarCount({ starCount }: HeaderClientProps) {
-  const count = use(starCount);
-  return count !== null ? formatStarCount(count) : "GitHub";
-}
-
-function DesktopStarCount({ starCount }: HeaderClientProps) {
-  const count = use(starCount);
-  if (count === null) return null;
-
-  return (
-    <span className="flex items-center gap-1">
-      <span className="text-amber-400 dark:text-[hsl(var(--neo-link))]">★</span>
-      {formatStarCount(count)}
-    </span>
-  );
-}
-
-function MobileMenuStarCount({ starCount }: HeaderClientProps) {
-  const count = use(starCount);
-  if (count === null) return null;
-
-  return (
-    <span className="text-xs tracking-[0.12em] text-[hsl(var(--neo-soft-text))] uppercase dark:text-neutral-300">
-      {formatStarCount(count)}
-    </span>
-  );
-}
-
-export function HeaderClient({ starCount }: HeaderClientProps) {
+export function HeaderClient() {
   const pathname = usePathname();
   const [isPrivateReposDialogOpen, setIsPrivateReposDialogOpen] =
     useState(false);
@@ -67,8 +28,6 @@ export function HeaderClient({ starCount }: HeaderClientProps) {
   // pathname is identical on server and client for full-page loads (the proxy
   // never rewrites URLs), so these can render at SSR without mismatch risk.
   const isBrowsePage = pathname === "/browse";
-  const showMobileGithubButton =
-    pathname === "/" || isBrowsePage || pathname === "/videos";
 
   return (
     <header className="border-black sm:border-b-[3px] dark:border-black">
@@ -84,22 +43,7 @@ export function HeaderClient({ starCount }: HeaderClientProps) {
           </span>
         </Link>
         <div className="flex items-center gap-2 sm:hidden">
-          {showMobileGithubButton ? (
-            <Link
-              href={GITHUB_REPO_URL}
-              className="browse-muted-button inline-flex min-h-[42px] items-center gap-2 rounded-md px-3 py-2 text-sm font-semibold"
-            >
-              <GitHubIcon className="h-4 w-4" />
-              <span className="flex items-center gap-1">
-                <span className="text-amber-400 dark:text-[hsl(var(--neo-link))]">
-                  ★
-                </span>
-                <Suspense fallback="GitHub">
-                  <MobileStarCount starCount={starCount} />
-                </Suspense>
-              </span>
-            </Link>
-          ) : !isBrowsePage ? (
+          {!isBrowsePage ? (
             <Link
               href="/browse"
               prefetch={false}
@@ -159,16 +103,6 @@ export function HeaderClient({ starCount }: HeaderClientProps) {
             Private Repos
           </button>
           <ThemeToggle />
-          <Link
-            href={GITHUB_REPO_URL}
-            className="flex items-center gap-1 text-sm font-medium text-black transition-colors duration-150 hover:text-purple-600 sm:gap-2 dark:text-neutral-200 dark:hover:text-[hsl(var(--neo-link-hover))]"
-          >
-            <GitHubIcon className="h-5 w-5" />
-            <span className="hidden sm:inline">GitHub</span>
-            <Suspense fallback={null}>
-              <DesktopStarCount starCount={starCount} />
-            </Suspense>
-          </Link>
         </nav>
 
         <div
@@ -238,19 +172,6 @@ export function HeaderClient({ starCount }: HeaderClientProps) {
                   onToggle={() => setIsMobileMenuOpen(false)}
                   className="browse-muted-button inline-flex min-h-[48px] items-center justify-between rounded-md px-4 py-3 text-sm font-semibold"
                 />
-                <Link
-                  href={GITHUB_REPO_URL}
-                  onClick={() => setIsMobileMenuOpen(false)}
-                  className="browse-muted-button inline-flex min-h-[48px] items-center justify-between gap-3 rounded-md px-4 py-3 text-sm font-semibold"
-                >
-                  <span className="flex items-center gap-2">
-                    <GitHubIcon className="h-5 w-5" />
-                    GitHub Repo
-                  </span>
-                  <Suspense fallback={null}>
-                    <MobileMenuStarCount starCount={starCount} />
-                  </Suspense>
-                </Link>
               </nav>
             </div>
           </div>

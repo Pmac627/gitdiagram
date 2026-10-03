@@ -21,7 +21,6 @@ import type {
   VideoArtifact,
   VideoRenderStep,
 } from "~/features/explainer/types";
-import { captureVideoEvent } from "~/features/explainer/watch-analytics";
 import controls from "~/components/generation/workspace.module.css";
 import { SITE_URL } from "~/lib/site";
 import { JobRow } from "./explainer-progress";
@@ -51,7 +50,14 @@ function triggerDownload(href: string) {
  * and 9:16, captions burned in), the watch link, the phone's share sheet, and
  * a README badge or picture.
  */
-export function ExplainerShare({ video }: { video: VideoArtifact }) {
+export function ExplainerShare({
+  video,
+  renderEnabled = false,
+}: {
+  video: VideoArtifact;
+  /** The server renders MP4s and posters; without it those options are hidden. */
+  renderEnabled?: boolean;
+}) {
   const { owner, repo } = video.meta;
   const [job, setJob] = useState<{
     format: RenderFormat;
@@ -78,7 +84,6 @@ export function ExplainerShare({ video }: { video: VideoArtifact }) {
   );
 
   const download = async (format: RenderFormat) => {
-    captureVideoEvent("video_shared", video, { method: `mp4_${format}` });
     const controller = new AbortController();
     render.current = controller;
     setError(null);
@@ -119,7 +124,6 @@ export function ExplainerShare({ video }: { video: VideoArtifact }) {
     try {
       await navigator.clipboard.writeText(text);
       setCopied(what);
-      captureVideoEvent("video_shared", video, { method: what });
       window.clearTimeout(copyTimer.current);
       copyTimer.current = window.setTimeout(() => setCopied(null), 1800);
     } catch {
@@ -138,25 +142,29 @@ export function ExplainerShare({ video }: { video: VideoArtifact }) {
   return (
     <div className={styles.share}>
       <div className={styles.shareRow}>
-        <button
-          type="button"
-          className={`${controls.actionButton} ${controls.primary}`}
-          onClick={() => void download("landscape")}
-          disabled={job !== null || stale}
-        >
-          <Download size={15} aria-hidden="true" />
-          {label("landscape", "Download MP4")}
-        </button>
-        <button
-          type="button"
-          className={controls.actionButton}
-          onClick={() => void download("vertical")}
-          disabled={job !== null || stale}
-          title="9:16 for Shorts, Reels and TikTok"
-        >
-          <Smartphone size={15} aria-hidden="true" />
-          {label("vertical", "Vertical MP4")}
-        </button>
+        {renderEnabled && (
+          <>
+            <button
+              type="button"
+              className={`${controls.actionButton} ${controls.primary}`}
+              onClick={() => void download("landscape")}
+              disabled={job !== null || stale}
+            >
+              <Download size={15} aria-hidden="true" />
+              {label("landscape", "Download MP4")}
+            </button>
+            <button
+              type="button"
+              className={controls.actionButton}
+              onClick={() => void download("vertical")}
+              disabled={job !== null || stale}
+              title="9:16 for Shorts, Reels and TikTok"
+            >
+              <Smartphone size={15} aria-hidden="true" />
+              {label("vertical", "Vertical MP4")}
+            </button>
+          </>
+        )}
         {canShare ? (
           <button
             type="button"
@@ -167,11 +175,6 @@ export function ExplainerShare({ video }: { video: VideoArtifact }) {
                   title: `${owner}/${repo}, explained in a minute`,
                   url,
                 })
-                .then(() =>
-                  captureVideoEvent("video_shared", video, {
-                    method: "native",
-                  }),
-                )
                 .catch(() => undefined)
             }
           >
@@ -205,19 +208,21 @@ export function ExplainerShare({ video }: { video: VideoArtifact }) {
           )}
           {copied === "badge" ? "Badge copied" : "README badge"}
         </button>
-        <button
-          type="button"
-          className={controls.actionButton}
-          onClick={() => void copy(picture, "picture")}
-          title="Markdown for a README picture that opens this video"
-        >
-          {copied === "picture" ? (
-            <Check size={15} aria-hidden="true" />
-          ) : (
-            <ImageIcon size={15} aria-hidden="true" />
-          )}
-          {copied === "picture" ? "Picture copied" : "README picture"}
-        </button>
+        {renderEnabled && (
+          <button
+            type="button"
+            className={controls.actionButton}
+            onClick={() => void copy(picture, "picture")}
+            title="Markdown for a README picture that opens this video"
+          >
+            {copied === "picture" ? (
+              <Check size={15} aria-hidden="true" />
+            ) : (
+              <ImageIcon size={15} aria-hidden="true" />
+            )}
+            {copied === "picture" ? "Picture copied" : "README picture"}
+          </button>
+        )}
       </div>
       {/* Announces each step once; the percentage beside it is not read out. */}
       <span className="sr-only" role="status">

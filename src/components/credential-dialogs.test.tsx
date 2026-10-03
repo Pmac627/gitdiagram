@@ -24,6 +24,25 @@ vi.mock("~/features/credentials/api", () => ({
   saveCredential: mocks.saveCredential,
 }));
 
+interface StatusFixture {
+  githubPatConfigured: boolean;
+  openaiApiKeyConfigured: boolean;
+  configuredProvider: "openai";
+  apiKeyProvider: "openai" | null;
+}
+
+function status(
+  openaiApiKeyConfigured: boolean,
+  githubPatConfigured: boolean,
+): StatusFixture {
+  return {
+    openaiApiKeyConfigured,
+    githubPatConfigured,
+    configuredProvider: "openai",
+    apiKeyProvider: openaiApiKeyConfigured ? "openai" : null,
+  };
+}
+
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((promiseResolve) => {
@@ -42,18 +61,9 @@ describe("credential dialogs", () => {
       value: { writeText: mocks.writeText },
     });
     mocks.writeText.mockResolvedValue(undefined);
-    mocks.getCredentialStatus.mockResolvedValue({
-      openaiApiKeyConfigured: false,
-      githubPatConfigured: false,
-    });
-    mocks.saveCredential.mockResolvedValue({
-      openaiApiKeyConfigured: true,
-      githubPatConfigured: true,
-    });
-    mocks.clearCredential.mockResolvedValue({
-      openaiApiKeyConfigured: false,
-      githubPatConfigured: false,
-    });
+    mocks.getCredentialStatus.mockResolvedValue(status(false, false));
+    mocks.saveCredential.mockResolvedValue(status(true, true));
+    mocks.clearCredential.mockResolvedValue(status(false, false));
   });
 
   it("saves an OpenAI key without ever pre-filling the secret", async () => {
@@ -76,6 +86,7 @@ describe("credential dialogs", () => {
       expect(mocks.saveCredential).toHaveBeenCalledWith(
         "openai_api_key",
         "sk-browser-entry",
+        "openai",
       ),
     );
     expect(onClose).toHaveBeenCalled();
@@ -83,10 +94,7 @@ describe("credential dialogs", () => {
   });
 
   it("does not let a late status response overwrite a successful save", async () => {
-    const credentialStatus = createDeferred<{
-      githubPatConfigured: boolean;
-      openaiApiKeyConfigured: boolean;
-    }>();
+    const credentialStatus = createDeferred<StatusFixture>();
     mocks.getCredentialStatus.mockReturnValueOnce(credentialStatus.promise);
     render(<ApiKeyDialog isOpen onClose={vi.fn()} />);
 
@@ -102,10 +110,7 @@ describe("credential dialogs", () => {
       await screen.findByText("Key saved. Paste a new one to replace it."),
     ).toBeInTheDocument();
 
-    credentialStatus.resolve({
-      githubPatConfigured: false,
-      openaiApiKeyConfigured: false,
-    });
+    credentialStatus.resolve(status(false, false));
 
     await waitFor(() =>
       expect(
@@ -115,10 +120,7 @@ describe("credential dialogs", () => {
   });
 
   it("accepts fine-grained GitHub PATs and clears only through the API", async () => {
-    mocks.getCredentialStatus.mockResolvedValueOnce({
-      openaiApiKeyConfigured: false,
-      githubPatConfigured: true,
-    });
+    mocks.getCredentialStatus.mockResolvedValueOnce(status(false, true));
     const onClose = vi.fn();
     render(<PrivateReposDialog isOpen onClose={onClose} />);
 
@@ -262,14 +264,8 @@ describe("credential dialogs", () => {
     });
 
     it("shows clearing feedback and refreshes only after a successful clear", async () => {
-      mocks.getCredentialStatus.mockResolvedValueOnce({
-        openaiApiKeyConfigured: true,
-        githubPatConfigured: true,
-      });
-      const cleared = createDeferred<{
-        openaiApiKeyConfigured: boolean;
-        githubPatConfigured: boolean;
-      }>();
+      mocks.getCredentialStatus.mockResolvedValueOnce(status(true, true));
+      const cleared = createDeferred<StatusFixture>();
       mocks.clearCredential.mockReturnValueOnce(cleared.promise);
       const onClose = vi.fn();
       const onSaved = vi.fn();
@@ -287,22 +283,14 @@ describe("credential dialogs", () => {
         screen.getByLabelText(inputLabel, { selector: "input" }),
       ).toBeDisabled();
       expect(onSaved).not.toHaveBeenCalled();
-      await act(async () =>
-        cleared.resolve({
-          openaiApiKeyConfigured: false,
-          githubPatConfigured: false,
-        }),
-      );
+      await act(async () => cleared.resolve(status(false, false)));
       expect(mocks.clearCredential).toHaveBeenCalledWith(credential);
       expect(onClose).toHaveBeenCalledOnce();
       expect(onSaved).toHaveBeenCalledOnce();
     });
 
     it("does not retry after a pending save is dismissed", async () => {
-      const saved = createDeferred<{
-        openaiApiKeyConfigured: boolean;
-        githubPatConfigured: boolean;
-      }>();
+      const saved = createDeferred<StatusFixture>();
       mocks.saveCredential.mockReturnValueOnce(saved.promise);
       const onClose = vi.fn();
       const onSaved = vi.fn();
@@ -320,12 +308,7 @@ describe("credential dialogs", () => {
       rerender(
         <Component isOpen={false} onClose={onClose} onSaved={onSaved} />,
       );
-      await act(async () =>
-        saved.resolve({
-          openaiApiKeyConfigured: true,
-          githubPatConfigured: true,
-        }),
-      );
+      await act(async () => saved.resolve(status(true, true)));
       expect(onSaved).not.toHaveBeenCalled();
       expect(onClose).not.toHaveBeenCalled();
     });

@@ -3,33 +3,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 const mocks = vi.hoisted(() => ({
-  readClaudeCredit: vi.fn(),
   voiceCreditUsd: vi.fn(),
-  readControlsForDisplay: vi.fn(),
+  removedDependency: vi.fn(),
 }));
 
-vi.mock("~/server/admin/claude-credit", () => ({
-  readClaudeCredit: mocks.readClaudeCredit,
-}));
-vi.mock("~/server/admin/controls", () => ({
-  readControlsForDisplay: mocks.readControlsForDisplay,
-}));
-vi.mock("~/server/admin/live-events", () => ({
-  createPresenceToken: () => null,
-  presenceSocketUrl: () => null,
-}));
+// Removed in Phase 3: the per-day video and render budgets no longer exist.
+// The tripwires record a call so a test can assert the state never reads them.
 vi.mock("~/server/explainer/limits", () => ({
-  videoUsageToday: async () => null,
+  videoUsageToday: async () => {
+    mocks.removedDependency("limits.videoUsageToday");
+    return null;
+  },
 }));
 vi.mock("~/server/explainer/voice", () => ({
   voiceCreditUsd: mocks.voiceCreditUsd,
   voicePausedUntil: async () => null,
 }));
 vi.mock("~/server/generate/complimentary-gate", () => ({
-  readComplimentaryUsageToday: async () => null,
+  readComplimentaryUsageToday: async () => {
+    mocks.removedDependency("complimentary-gate.readComplimentaryUsageToday");
+    return null;
+  },
 }));
 
-const CONTROLS = { videoAudience: "priority", videosPaused: false };
 const never = () => new Promise<never>(() => undefined);
 
 /** A fresh instance: no balance cached from another test. */
@@ -40,20 +36,12 @@ const load = async () => {
 
 beforeEach(() => {
   vi.useFakeTimers();
-  mocks.readControlsForDisplay.mockResolvedValue({
-    controls: CONTROLS,
-    unreadable: false,
-  });
-  mocks.readClaudeCredit.mockResolvedValue({
-    setUsd: 50,
-    setAt: 1,
-    spentUsd: 5,
-  });
   mocks.voiceCreditUsd.mockResolvedValue(12.5);
 });
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
 });
 
 /** Reads the state, moving the clock on so deadlines can pass. */
@@ -64,27 +52,11 @@ async function read(readAdminState: Awaited<ReturnType<typeof load>>) {
 }
 
 describe("the dashboard's state", () => {
-  it("shows a slow balance as unreadable instead of holding up the poll", async () => {
+  it("shows a slow voice balance as unreadable instead of holding up the poll", async () => {
     const readAdminState = await load();
-    mocks.readClaudeCredit.mockImplementation(never);
     mocks.voiceCreditUsd.mockImplementation(never);
     const state = await read(readAdminState);
-    expect(state.claudeCredit).toBe("unreadable");
     expect(state.voiceCreditUsd).toBeNull();
-    expect(state.controls).toBe(CONTROLS);
-  });
-
-  it("tells a missing admin key from a failed read", async () => {
-    const readAdminState = await load();
-    mocks.readClaudeCredit.mockResolvedValueOnce(null);
-    expect((await read(readAdminState)).claudeCredit).toBe("no-key");
-    mocks.readClaudeCredit.mockRejectedValueOnce(new Error("429"));
-    expect((await read(readAdminState)).claudeCredit).toBe("unreadable");
-    expect((await read(readAdminState)).claudeCredit).toEqual({
-      setUsd: 50,
-      setAt: 1,
-      spentUsd: 5,
-    });
   });
 
   it("asks OpenRouter for the voice balance at most every half minute", async () => {
@@ -95,6 +67,13 @@ describe("the dashboard's state", () => {
     expect(mocks.voiceCreditUsd).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(30_000);
     expect((await read(readAdminState)).voiceCreditUsd).toBe(11);
+  });
+
+  it("reports no Vercel deployment details (the fork runs on IIS)", async () => {
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "0123456789abcdef");
+    vi.stubEnv("VERCEL_REGION", "iad1");
+    const readAdminState = await load();
+    expect(await read(readAdminState)).not.toHaveProperty("deployment");
   });
 
   it("keeps a late voice balance for the next poll", async () => {
@@ -109,12 +88,24 @@ describe("the dashboard's state", () => {
     expect(mocks.voiceCreditUsd).toHaveBeenCalledTimes(1);
   });
 
-  it("says when the switches could not be read", async () => {
+  it("reports no video or render budget and no complimentary token usage", async () => {
     const readAdminState = await load();
-    mocks.readControlsForDisplay.mockResolvedValue({
-      controls: CONTROLS,
-      unreadable: true,
-    });
-    expect((await read(readAdminState)).controlsUnreadable).toBe(true);
+    const state = await read(readAdminState);
+
+    expect(state).not.toHaveProperty("video");
+    expect(state).not.toHaveProperty("diagramQuota");
+    expect(mocks.removedDependency).not.toHaveBeenCalled();
+  });
+
+  // Phase 4 decision (1): the pause switch is gone, so the state carries no
+  // switches and no "switches unreadable" flag.
+  it("reports no live switches and no unreadable-switches flag", async () => {
+    const readAdminState = await load();
+    const state = await read(readAdminState);
+
+    expect(state).not.toHaveProperty("controls");
+    expect(state).not.toHaveProperty("controlsUnreadable");
+    expect(state).toHaveProperty("voiceCreditUsd", 12.5);
+    expect(state).toHaveProperty("voicePausedUntil");
   });
 });
